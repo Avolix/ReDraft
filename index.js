@@ -888,10 +888,11 @@ function registerSlashCommand() {
 
     // Load settings HTML
     // Derive extension path from our own script tag (ST sets the src correctly)
-    const ownScript = document.querySelector('script[src*="redraft"][src$="index.js"]');
+    const ownScript = document.querySelector('script[src*="redraft" i][src$="index.js"]');
     const basePath = ownScript
         ? ownScript.src.substring(0, ownScript.src.lastIndexOf('/') + 1)
         : EXTENSION_BASE_URL;
+    console.debug(`${LOG_PREFIX} Resolved base path: ${basePath}`);
 
     try {
         const settingsHtml = await fetch(`${basePath}settings.html`);
