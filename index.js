@@ -195,6 +195,18 @@ function updateConnectionModeUI() {
         stModeInfo.style.display = settings.connectionMode === 'st' ? '' : 'none';
     }
 
+    // Disable plugin option if plugin not available
+    const pluginOption = document.querySelector('#redraft_connection_mode option[value="plugin"]');
+    if (pluginOption) {
+        if (!pluginAvailable) {
+            pluginOption.disabled = true;
+            pluginOption.textContent = 'Use separate LLM (plugin not installed)';
+        } else {
+            pluginOption.disabled = false;
+            pluginOption.textContent = 'Use separate LLM (server plugin)';
+        }
+    }
+
     updateStatusDot(null);
     updatePluginBanner();
 }
@@ -674,6 +686,12 @@ function bindSettingsUI() {
             settings.customRules.push({ text: '', enabled: true });
             saveSettings();
             renderCustomRules();
+
+            // Auto-focus the new rule's text input
+            const ruleInputs = document.querySelectorAll('.redraft-rule-text');
+            if (ruleInputs.length > 0) {
+                ruleInputs[ruleInputs.length - 1].focus();
+            }
         });
     }
 
@@ -743,7 +761,21 @@ function bindSettingsUI() {
     if (popoutOpenSettings) {
         popoutOpenSettings.addEventListener('click', () => {
             togglePopout();
+            // Open the extensions panel
             document.getElementById('extensionsMenuButton')?.click();
+            // Scroll to and open the ReDraft drawer
+            setTimeout(() => {
+                const redraftSettings = document.getElementById('redraft_settings');
+                if (redraftSettings) {
+                    redraftSettings.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    // Open the drawer if it's closed
+                    const drawerToggle = redraftSettings.querySelector('.inline-drawer-toggle');
+                    const drawerContent = redraftSettings.querySelector('.inline-drawer-content');
+                    if (drawerToggle && drawerContent && drawerContent.style.display === 'none') {
+                        drawerToggle.click();
+                    }
+                }
+            }, 300);
         });
     }
 
@@ -910,8 +942,7 @@ function registerSlashCommand() {
             <!-- Connection Section -->
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <span>Connection</span>
-                    <span id="redraft_status_dot" class="redraft-status-dot" title="Not configured"></span>
+                    <span>Connection <span id="redraft_status_dot" class="redraft-status-dot" title="Not configured"></span></span>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">

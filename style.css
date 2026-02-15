@@ -133,6 +133,7 @@
     border-radius: 50%;
     background: var(--grey50);
     margin-left: 6px;
+    vertical-align: middle;
     flex-shrink: 0;
     transition: background var(--animation-duration-2x, 250ms) ease;
 }
