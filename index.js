@@ -887,8 +887,14 @@ function registerSlashCommand() {
     const { eventSource, event_types } = context;
 
     // Load settings HTML
+    // Derive extension path from our own script tag (ST sets the src correctly)
+    const ownScript = document.querySelector('script[src*="redraft"][src$="index.js"]');
+    const basePath = ownScript
+        ? ownScript.src.substring(0, ownScript.src.lastIndexOf('/') + 1)
+        : EXTENSION_BASE_URL;
+
     try {
-        const settingsHtml = await fetch(`${EXTENSION_BASE_URL}settings.html`);
+        const settingsHtml = await fetch(`${basePath}settings.html`);
         if (settingsHtml.ok) {
             const html = await settingsHtml.text();
             const container = document.getElementById('extensions_settings2');
@@ -902,6 +908,8 @@ function registerSlashCommand() {
                 const installDialog = document.getElementById('redraft_install_dialog');
                 if (installDialog) document.body.appendChild(installDialog);
             }
+        } else {
+            console.error(`${LOG_PREFIX} Settings HTML not found (${settingsHtml.status}) at: ${basePath}settings.html`);
         }
     } catch (err) {
         console.error(`${LOG_PREFIX} Failed to load settings HTML:`, err);
