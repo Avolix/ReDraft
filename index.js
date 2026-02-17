@@ -546,17 +546,17 @@ function renderCustomRules() {
         `;
 
         item.querySelector('.redraft-rule-toggle').addEventListener('change', (e) => {
-            settings.customRules[index].enabled = e.target.checked;
+            getSettings().customRules[index].enabled = e.target.checked;
             saveSettings();
         });
 
         item.querySelector('.redraft-rule-text').addEventListener('input', (e) => {
-            settings.customRules[index].text = e.target.value;
+            getSettings().customRules[index].text = e.target.value;
             saveSettings();
         });
 
         item.querySelector('.redraft-delete-rule').addEventListener('click', () => {
-            settings.customRules.splice(index, 1);
+            getSettings().customRules.splice(index, 1);
             saveSettings();
             renderCustomRules();
         });
@@ -564,10 +564,10 @@ function renderCustomRules() {
         container.appendChild(item);
     });
 
-    initDragReorder(container, settings);
+    initDragReorder(container);
 }
 
-function initDragReorder(container, settings) {
+function initDragReorder(container) {
     let draggedItem = null;
 
     container.querySelectorAll('.drag-handle').forEach(handle => {
@@ -606,8 +606,9 @@ function initDragReorder(container, settings) {
             const fromIndex = parseInt(draggedItem.dataset.index, 10);
             const toIndex = parseInt(item.dataset.index, 10);
 
-            const [moved] = settings.customRules.splice(fromIndex, 1);
-            settings.customRules.splice(toIndex, 0, moved);
+            const s = getSettings();
+            const [moved] = s.customRules.splice(fromIndex, 1);
+            s.customRules.splice(toIndex, 0, moved);
             saveSettings();
             renderCustomRules();
         });
@@ -617,15 +618,17 @@ function initDragReorder(container, settings) {
 // ─── Settings UI Binding ────────────────────────────────────────────
 
 function bindSettingsUI() {
-    const settings = getSettings();
-    console.debug(`${LOG_PREFIX} bindSettingsUI() called, customRules:`, settings.customRules);
+    // IMPORTANT: Always use getSettings() fresh in each handler — ST may replace
+    // the extension_settings object during save/load, making cached refs stale.
+    const initSettings = getSettings();
+    console.debug(`${LOG_PREFIX} bindSettingsUI() called, customRules:`, initSettings.customRules);
 
     // Connection mode selector
     const modeSelect = document.getElementById('redraft_connection_mode');
     if (modeSelect) {
-        modeSelect.value = settings.connectionMode;
+        modeSelect.value = initSettings.connectionMode;
         modeSelect.addEventListener('change', (e) => {
-            settings.connectionMode = e.target.value;
+            getSettings().connectionMode = e.target.value;
             saveSettings();
             updateConnectionModeUI();
         });
@@ -634,9 +637,9 @@ function bindSettingsUI() {
     // Enable toggle
     const enabledEl = document.getElementById('redraft_enabled');
     if (enabledEl) {
-        enabledEl.checked = settings.enabled;
+        enabledEl.checked = initSettings.enabled;
         enabledEl.addEventListener('change', (e) => {
-            settings.enabled = e.target.checked;
+            getSettings().enabled = e.target.checked;
             saveSettings();
             updatePopoutAutoState();
         });
@@ -645,9 +648,9 @@ function bindSettingsUI() {
     // Auto-refine toggle
     const autoEl = document.getElementById('redraft_auto_refine');
     if (autoEl) {
-        autoEl.checked = settings.autoRefine;
+        autoEl.checked = initSettings.autoRefine;
         autoEl.addEventListener('change', (e) => {
-            settings.autoRefine = e.target.checked;
+            getSettings().autoRefine = e.target.checked;
             saveSettings();
             updatePopoutAutoState();
         });
@@ -656,9 +659,9 @@ function bindSettingsUI() {
     // System prompt
     const promptEl = document.getElementById('redraft_system_prompt');
     if (promptEl) {
-        promptEl.value = settings.systemPrompt || '';
+        promptEl.value = initSettings.systemPrompt || '';
         promptEl.addEventListener('input', (e) => {
-            settings.systemPrompt = e.target.value;
+            getSettings().systemPrompt = e.target.value;
             saveSettings();
         });
     }
@@ -667,9 +670,9 @@ function bindSettingsUI() {
     for (const key of Object.keys(BUILTIN_RULE_LABELS)) {
         const el = document.getElementById(`redraft_rule_${key}`);
         if (el) {
-            el.checked = settings.builtInRules[key];
+            el.checked = initSettings.builtInRules[key];
             el.addEventListener('change', (e) => {
-                settings.builtInRules[key] = e.target.checked;
+                getSettings().builtInRules[key] = e.target.checked;
                 saveSettings();
             });
         }
@@ -687,8 +690,9 @@ function bindSettingsUI() {
     if (addRuleBtn) {
         addRuleBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            console.log(`${LOG_PREFIX} Add rule button clicked! Current rules:`, settings.customRules.length);
-            settings.customRules.push({ text: '', enabled: true });
+            const s = getSettings();
+            console.log(`${LOG_PREFIX} Add rule button clicked! Current rules:`, s.customRules.length);
+            s.customRules.push({ text: '', enabled: true });
             saveSettings();
             renderCustomRules();
 
@@ -742,9 +746,10 @@ function bindSettingsUI() {
 
     const popoutAuto = document.getElementById('redraft_popout_auto');
     if (popoutAuto) {
-        popoutAuto.checked = settings.autoRefine;
+        popoutAuto.checked = initSettings.autoRefine;
         popoutAuto.addEventListener('change', (e) => {
-            settings.autoRefine = e.target.checked;
+            const s = getSettings();
+            s.autoRefine = e.target.checked;
             if (autoEl) autoEl.checked = e.target.checked;
             saveSettings();
             updatePopoutAutoState();
