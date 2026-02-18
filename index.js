@@ -18,32 +18,69 @@ const defaultSettings = Object.freeze({
     autoRefine: false,
     connectionMode: 'st', // 'st' or 'plugin'
     builtInRules: {
-        grammar: false,
-        repetition: false,
+        grammar: true,
+        echo: true,
+        repetition: true,
         voice: true,
-        prose: false,
-        formatting: false,
-        lore: false,
+        prose: true,
+        formatting: true,
+        ending: false,   // opinionated — off by default
+        lore: false,     // needs rich character context
     },
     customRules: [],
     systemPrompt: '',
 });
 
-const BUILTIN_RULE_LABELS = {
-    grammar: 'Fix grammar and spelling',
-    repetition: 'Remove repetition and redundant phrases',
-    voice: 'Maintain character voice and personality',
-    prose: 'Improve prose quality and flow',
-    formatting: 'Fix formatting and punctuation',
-    lore: 'Ensure consistency with established lore',
+const BUILTIN_RULES = {
+    grammar: {
+        label: 'Fix grammar & spelling',
+        prompt: 'Fix grammatical errors, spelling mistakes, and awkward phrasing. Do not alter intentional dialect, slang, verbal tics, or character-specific speech patterns \u2014 only correct genuine errors. Preserve intentional sentence fragments used for rhythm or voice.',
+    },
+    echo: {
+        label: 'Remove echo & restatement',
+        prompt: 'Using the "Last user message" from context above, scan for sentences where the character restates, paraphrases, or references the user\'s previous message instead of advancing the scene.\n\nBANNED patterns \u2014 if the sentence matches, cut and replace with forward motion:\n1. Character speaks ABOUT what user said/did (any tense): "You\'re asking me to..." / "You said..." / "You want me to..."\n2. "That/this" referring to user\'s input: "That\'s not what you..." / "This is about..."\n3. Reframing: "Not [user\'s word] \u2014 [character\'s word]." / "In other words..."\n4. Processing narration: "Your words [verb]..." (hung, landed, settled) / Character processing what user said / Italicized replays of user\'s dialogue as character thought.\n\nCheck the WHOLE response, not just the opening. Replace cut content with character action \u2014 what they do next, not what they think about what was said. One-word acknowledgment permitted ("Yeah." / nod), then forward.',
+    },
+    repetition: {
+        label: 'Reduce repetition',
+        prompt: 'Using the "Previous response ending" from context above, scan for repetitive elements within this response AND compared to the previous response:\n1. Repeated physical actions: Same gesture appearing twice+ (crossing arms, sighing, looking away). Replace the second instance with a different physical expression.\n2. Repeated sentence structures: Same openings, same punctuation patterns, same metaphor family used twice+.\n3. Repeated emotional beats: Character hitting the same note twice without progression. If angry twice, the second should be a different texture.\n\nDo NOT remove intentional repetition for rhetorical effect (anaphora, callbacks, echoed dialogue). Only flag mechanical/unconscious repetition.',
+    },
+    voice: {
+        label: 'Maintain character voice',
+        prompt: 'Using the "Character" context provided above, verify each character\'s dialogue is distinct and consistent:\n1. Speech patterns: If a character uses contractions, slang, verbal tics, or specific vocabulary \u2014 preserve them. Do not polish rough speech into grammatically correct prose.\n2. Voice flattening: If multiple characters speak, their dialogue should sound different. Flag if all characters use the same register or vocabulary level.\n3. Register consistency: A casual character shouldn\'t suddenly become eloquent mid-scene (unless that shift IS the point).\n\nDo not homogenize dialogue. A character\'s voice is more important than technically "correct" writing.',
+    },
+    prose: {
+        label: 'Clean up prose',
+        prompt: 'Scan for common AI prose weaknesses. Per issue found, make the minimum surgical fix:\n1. Somatic clich\u00e9s: "breath hitched/caught," "heart skipped/clenched," "stomach dropped/tightened," "shiver down spine." Replace with plain statement or specific physical detail.\n2. Purple prose: "Velvety voice," "liquid tone," "fluid grace," "pregnant pause," cosmic melodrama. Replace with concrete, grounded language.\n3. Filter words: "She noticed," "he felt," "she realized." Cut the filter \u2014 go direct.\n4. Telling over showing: "She felt sad" / "He was angry." Replace with embodied reactions ONLY if the telling is genuinely weaker.\n\nDo NOT over-edit. If prose is functional and voice-consistent, leave it alone. This rule targets clear weaknesses, not style preferences.',
+    },
+    formatting: {
+        label: 'Fix formatting',
+        prompt: 'Ensure consistent formatting within the response\'s existing convention:\n1. Fix orphaned formatting marks (unclosed asterisks, mismatched quotes, broken tags)\n2. Fix inconsistent style (mixing *asterisks* and _underscores_ for the same purpose)\n3. Ensure dialogue punctuation is consistent with the established convention\n\nDo not change the author\'s chosen formatting convention \u2014 only correct errors within it.',
+    },
+    ending: {
+        label: 'Fix crafted endings',
+        prompt: 'Check if the response ends with a "dismount" \u2014 a crafted landing designed to feel like an ending rather than a mid-scene pause.\n\nDISMOUNT patterns to fix:\n1. Dialogue payload followed by physical stillness: "Her thumb rested on his pulse." \u2014 body part + state verb + location as final beat.\n2. Fragment clusters placed after dialogue for weight: "One beat." / "Counting." / "Still."\n3. Summary narration re-describing the emotional state of the scene.\n4. Poetic/philosophical final line \u2014 theatrical closing statements.\n5. Double dismount: two landing constructions stacked.\n\nFIX: Find the last line of dialogue or action with unresolved consequences. Cut everything after it. If the response has no dialogue (pure narration/action), find the last action with unresolved consequences and cut any stillness or summary after it. The response should end mid-scene.\n\nEXCEPTION: If the scene is genuinely concluding (location change, time skip, departure), one clean landing beat is permitted.',
+    },
+    lore: {
+        label: 'Maintain lore consistency',
+        prompt: 'Using the "Character" context provided above, flag only glaring contradictions with established character/world information. Examples: wrong eye color, wrong relationship status, referencing events that didn\'t happen, contradicting established abilities.\n\nDo not invent new lore. When uncertain, preserve the original phrasing rather than "correcting" it. Minor ambiguities are not errors.',
+    },
 };
 
-const DEFAULT_SYSTEM_PROMPT = `You are an expert editor. Your task is to refine and improve a roleplay message according to the provided rules. You must:
-- Return ONLY the refined message text, with no commentary, explanations, or meta-text
-- Preserve the original meaning, intent, and narrative direction
-- Keep the same approximate length unless a rule specifically calls for changes
-- Do not add new story elements, actions, or dialogue that weren't in the original
-- Maintain any existing formatting (markdown, asterisks for actions, quotes for dialogue, etc.)`;
+const DEFAULT_SYSTEM_PROMPT = `You are a roleplay prose editor. You refine AI-generated roleplay messages by applying specific rules while preserving the author's creative intent.
+
+Core principles:
+- Return ONLY the refined message text \u2014 no commentary, explanations, OOC notes, or meta-text
+- Preserve the original meaning, narrative direction, and emotional tone
+- Preserve the original paragraph structure and sequence of events \u2014 do not reorder content, merge paragraphs, or restructure the narrative flow
+- Edits are surgical: change the minimum necessary to satisfy the active rules. Fix the violating sentence, not the paragraph around it
+- Keep approximately the same length unless a rule specifically calls for cuts
+- Do not add new story elements, actions, or dialogue not present in the original
+- Do not censor, sanitize, or tone down content \u2014 the original's maturity level is intentional
+- Maintain existing formatting conventions (e.g. *asterisks for actions*, "quotes for dialogue")
+- Treat each character as a distinct voice \u2014 do not flatten dialogue into a single register
+- When rules conflict, character voice and narrative intent take priority over technical polish
+
+You will be given the original message, a set of refinement rules to apply, and optionally context about the characters and recent conversation. Apply the rules faithfully.`;
 
 // ─── State ──────────────────────────────────────────────────────────
 
@@ -78,10 +115,10 @@ function saveSettings() {
 function compileRules(settings) {
     const rules = [];
 
-    // Built-in rules first
-    for (const [key, label] of Object.entries(BUILTIN_RULE_LABELS)) {
+    // Built-in rules — emit detailed prompts, not labels
+    for (const [key, rule] of Object.entries(BUILTIN_RULES)) {
         if (settings.builtInRules[key]) {
-            rules.push(label);
+            rules.push(rule.prompt);
         }
     }
 
@@ -298,7 +335,38 @@ async function redraftMessage(messageIndex) {
         // Build the refinement prompt
         const rulesText = compileRules(settings);
         const systemPrompt = settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
-        const promptText = `Apply the following refinement rules to the message below.\n\nRules:\n${rulesText}\n\nOriginal message:\n${message.mes}`;
+
+        // Gather context for the LLM
+        const contextParts = [];
+        const char = context.characters?.[context.characterId];
+        const charDesc = char?.data?.personality
+            || char?.data?.description?.substring(0, 500)
+            || '';
+        if (context.name2 || charDesc) {
+            contextParts.push(`Character: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
+        }
+        if (context.name1) {
+            contextParts.push(`User character: ${context.name1}`);
+        }
+
+        // Last user message (for echo detection)
+        const lastUserMsg = [...chat].reverse().find(m => m.is_user && m.mes);
+        if (lastUserMsg) {
+            contextParts.push(`Last user message:\n${lastUserMsg.mes}`);
+        }
+
+        // Previous AI response ending (for repetition detection)
+        const prevAiMsgs = chat.filter((m, i) => !m.is_user && m.mes && i < messageIndex);
+        if (prevAiMsgs.length > 0) {
+            const prevTail = prevAiMsgs[prevAiMsgs.length - 1].mes.slice(-200);
+            contextParts.push(`Previous response ending (last ~200 chars):\n${prevTail}`);
+        }
+
+        const contextBlock = contextParts.length > 0
+            ? `Context:\n${contextParts.join('\n\n')}\n\n`
+            : '';
+
+        const promptText = `${contextBlock}Apply the following refinement rules to the message below.\n\nRules:\n${rulesText}\n\nOriginal message:\n${message.mes}`;
 
         // Call refinement via the appropriate mode
         let refinedText;
@@ -615,6 +683,98 @@ function initDragReorder(container) {
     });
 }
 
+/**
+ * Export custom rules as a JSON file download.
+ */
+function exportCustomRules() {
+    const settings = getSettings();
+    if (!settings.customRules || settings.customRules.length === 0) {
+        toastr.warning('No custom rules to export', 'ReDraft');
+        return;
+    }
+
+    const data = {
+        name: 'ReDraft Custom Rules',
+        version: 1,
+        rules: settings.customRules.map(r => ({
+            label: r.label || '',
+            text: r.text || '',
+            enabled: r.enabled !== false,
+        })),
+    };
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'redraft-rules.json';
+    a.click();
+    URL.revokeObjectURL(url);
+
+    toastr.success(`Exported ${data.rules.length} rules`, 'ReDraft');
+}
+
+/**
+ * Import custom rules from a JSON file.
+ * @param {File} file
+ */
+async function importCustomRules(file) {
+    try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+
+        // Validate
+        if (!data.rules || !Array.isArray(data.rules) || data.rules.length === 0) {
+            toastr.error('Invalid file: must contain a non-empty "rules" array', 'ReDraft');
+            return;
+        }
+
+        // Parse valid rules, skip empty ones
+        const importedRules = data.rules
+            .filter(r => r && typeof r.text === 'string' && r.text.trim())
+            .map(r => ({
+                label: r.label || '',
+                text: r.text.trim(),
+                enabled: r.enabled !== false,
+            }));
+
+        if (importedRules.length === 0) {
+            toastr.error('No valid rules found in file', 'ReDraft');
+            return;
+        }
+
+        const ruleName = data.name || file.name.replace(/\.json$/i, '');
+
+        // Prompt user: Append or Replace
+        const s = getSettings();
+        const hasExisting = s.customRules.length > 0;
+
+        if (hasExisting) {
+            const replace = confirm(
+                `Import "${ruleName}" (${importedRules.length} rules)?\n\n` +
+                `OK = Replace existing ${s.customRules.length} rules\n` +
+                `Cancel = Append after existing rules`
+            );
+
+            if (replace) {
+                s.customRules = importedRules;
+            } else {
+                s.customRules.push(...importedRules);
+            }
+        } else {
+            s.customRules = importedRules;
+        }
+
+        saveSettings();
+        renderCustomRules();
+        toastr.success(`Imported ${importedRules.length} rules from "${ruleName}"`, 'ReDraft');
+
+    } catch (err) {
+        console.error(`${LOG_PREFIX} Import failed:`, err);
+        toastr.error('Failed to import: ' + (err.message || 'Invalid JSON'), 'ReDraft');
+    }
+}
+
 // ─── Settings UI Binding ────────────────────────────────────────────
 
 function bindSettingsUI() {
@@ -667,7 +827,7 @@ function bindSettingsUI() {
     }
 
     // Built-in rule toggles
-    for (const key of Object.keys(BUILTIN_RULE_LABELS)) {
+    for (const key of Object.keys(BUILTIN_RULES)) {
         const el = document.getElementById(`redraft_rule_${key}`);
         if (el) {
             el.checked = initSettings.builtInRules[key];
@@ -682,6 +842,26 @@ function bindSettingsUI() {
     const saveConnBtn = document.getElementById('redraft_save_connection');
     if (saveConnBtn) {
         saveConnBtn.addEventListener('click', saveConnection);
+    }
+
+    // Import custom rules button
+    const importBtn = document.getElementById('redraft_import_rules');
+    const importFile = document.getElementById('redraft_import_rules_file');
+    if (importBtn && importFile) {
+        importBtn.addEventListener('click', () => importFile.click());
+        importFile.addEventListener('change', (e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+                importCustomRules(file);
+                e.target.value = ''; // Reset so same file can be re-imported
+            }
+        });
+    }
+
+    // Export custom rules button
+    const exportBtn = document.getElementById('redraft_export_rules');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', exportCustomRules);
     }
 
     // Add custom rule button
@@ -1029,27 +1209,35 @@ function registerSlashCommand() {
                     <div class="redraft-rules-builtins">
                         <label class="checkbox_label">
                             <input type="checkbox" id="redraft_rule_grammar" />
-                            <span>Fix grammar and spelling</span>
+                            <span>Fix grammar & spelling</span>
+                        </label>
+                        <label class="checkbox_label">
+                            <input type="checkbox" id="redraft_rule_echo" />
+                            <span>Remove echo & restatement</span>
                         </label>
                         <label class="checkbox_label">
                             <input type="checkbox" id="redraft_rule_repetition" />
-                            <span>Remove repetition and redundant phrases</span>
+                            <span>Reduce repetition</span>
                         </label>
                         <label class="checkbox_label">
                             <input type="checkbox" id="redraft_rule_voice" />
-                            <span>Maintain character voice and personality</span>
+                            <span>Maintain character voice</span>
                         </label>
                         <label class="checkbox_label">
                             <input type="checkbox" id="redraft_rule_prose" />
-                            <span>Improve prose quality and flow</span>
+                            <span>Clean up prose</span>
                         </label>
                         <label class="checkbox_label">
                             <input type="checkbox" id="redraft_rule_formatting" />
-                            <span>Fix formatting and punctuation</span>
+                            <span>Fix formatting</span>
+                        </label>
+                        <label class="checkbox_label">
+                            <input type="checkbox" id="redraft_rule_ending" />
+                            <span>Fix crafted endings</span>
                         </label>
                         <label class="checkbox_label">
                             <input type="checkbox" id="redraft_rule_lore" />
-                            <span>Ensure consistency with established lore</span>
+                            <span>Maintain lore consistency</span>
                         </label>
                     </div>
 
@@ -1057,8 +1245,17 @@ function registerSlashCommand() {
 
                     <div class="redraft-custom-rules-header">
                         <small>Custom Rules (ordered by priority)</small>
-                        <div id="redraft_add_rule" class="menu_button" title="Add custom rule">
-                            <i class="fa-solid fa-plus"></i>
+                        <div>
+                            <div id="redraft_import_rules" class="menu_button menu_button_icon" title="Import rules from JSON">
+                                <i class="fa-solid fa-file-import"></i>
+                            </div>
+                            <input type="file" id="redraft_import_rules_file" accept=".json" hidden />
+                            <div id="redraft_export_rules" class="menu_button menu_button_icon" title="Export rules to JSON">
+                                <i class="fa-solid fa-file-export"></i>
+                            </div>
+                            <div id="redraft_add_rule" class="menu_button menu_button_icon" title="Add custom rule">
+                                <i class="fa-solid fa-plus"></i>
+                            </div>
                         </div>
                     </div>
 
