@@ -330,3 +330,123 @@
 .mes_button.redraft-undo-btn {
     /* Inherits .mes_button */
 }
+
+/* Diff button */
+.mes_button.redraft-diff-btn {
+    /* Inherits .mes_button */
+}
+
+/* ─── Diff Popup ─────────────────────────────────────────────────── */
+
+.redraft-diff-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: redraft-fade-in 150ms ease;
+}
+
+@keyframes redraft-fade-in {
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
+}
+
+.redraft-diff-panel {
+    width: min(90vw, 700px);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBlurTintColor, var(--SmartThemeChatTintColor));
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+}
+
+.redraft-diff-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBorderColor);
+}
+
+.redraft-diff-title {
+    font-weight: 600;
+    font-size: calc(var(--mainFontSize) * 1.05);
+    color: var(--SmartThemeBodyColor);
+}
+
+.redraft-diff-stats {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.redraft-diff-stat-del,
+.redraft-diff-stat-ins {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    font-weight: 600;
+    font-family: monospace;
+}
+
+.redraft-diff-stat-del {
+    background: rgba(248, 81, 73, 0.2);
+    color: #f85149;
+}
+
+.redraft-diff-stat-ins {
+    background: rgba(63, 185, 80, 0.2);
+    color: #3fb950;
+}
+
+.redraft-diff-close {
+    cursor: pointer;
+    padding: 4px 8px;
+    margin-left: 8px;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.6;
+    transition: opacity 150ms ease;
+}
+
+.redraft-diff-close:hover {
+    opacity: 1;
+}
+
+.redraft-diff-body {
+    padding: 16px;
+    overflow-y: auto;
+    line-height: 1.7;
+    font-size: var(--mainFontSize);
+    color: var(--SmartThemeBodyColor);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* GitHub-style inline diff highlighting */
+.redraft-diff-del {
+    background: rgba(248, 81, 73, 0.15);
+    color: #f85149;
+    text-decoration: line-through;
+    text-decoration-color: rgba(248, 81, 73, 0.5);
+    border-radius: 2px;
+    padding: 1px 2px;
+}
+
+.redraft-diff-ins {
+    background: rgba(63, 185, 80, 0.15);
+    color: #3fb950;
+    border-radius: 2px;
+    padding: 1px 2px;
+}

@@ -29,6 +29,7 @@ const defaultSettings = Object.freeze({
     },
     customRules: [],
     systemPrompt: '',
+    showDiffAfterRefine: true,
 });
 
 const BUILTIN_RULES = {
@@ -377,14 +378,21 @@ async function redraftMessage(messageIndex) {
         }
 
         // Write refined text back
+        const originalText = message.mes;
         message.mes = refinedText;
         await saveChat();
 
         // Re-render the message in the UI
         rerenderMessage(messageIndex);
 
-        // Show undo button
+        // Show undo + diff buttons
         showUndoButton(messageIndex);
+        showDiffButton(messageIndex, originalText, refinedText);
+
+        // Auto-show diff popup if toggle is on
+        if (settings.showDiffAfterRefine) {
+            showDiffPopup(originalText, refinedText);
+        }
 
         toastr.success('Message refined', 'ReDraft');
         console.log(`${LOG_PREFIX} Message ${messageIndex} refined successfully (mode: ${settings.connectionMode})`);
@@ -419,6 +427,7 @@ async function undoRedraft(messageIndex) {
     await saveChat();
     rerenderMessage(messageIndex);
     hideUndoButton(messageIndex);
+    hideDiffButton(messageIndex);
 
     toastr.info('Original message restored', 'ReDraft');
     console.log(`${LOG_PREFIX} Message ${messageIndex} restored`);
@@ -500,6 +509,166 @@ function showUndoButton(messageIndex) {
 function hideUndoButton(messageIndex) {
     const btn = document.querySelector(`.mes[mesid="${messageIndex}"] .redraft-undo-btn`);
     if (btn) btn.remove();
+}
+
+function showDiffButton(messageIndex, originalText, refinedText) {
+    const mesEl = document.querySelector(`.mes[mesid="${messageIndex}"]`);
+    if (!mesEl) return;
+    const buttonsRow = mesEl.querySelector('.mes_buttons');
+    if (!buttonsRow || buttonsRow.querySelector('.redraft-diff-btn')) return;
+
+    const btn = document.createElement('div');
+    btn.classList.add('mes_button', 'redraft-diff-btn');
+    btn.title = 'View ReDraft Changes';
+    btn.innerHTML = '<i class="fa-solid fa-code-compare"></i>';
+    btn.addEventListener('click', () => showDiffPopup(originalText, refinedText));
+
+    const undoBtn = buttonsRow.querySelector('.redraft-undo-btn');
+    if (undoBtn) {
+        undoBtn.after(btn);
+    } else {
+        const refineBtn = buttonsRow.querySelector('.redraft-msg-btn');
+        if (refineBtn) refineBtn.after(btn);
+        else buttonsRow.prepend(btn);
+    }
+}
+
+function hideDiffButton(messageIndex) {
+    const btn = document.querySelector(`.mes[mesid="${messageIndex}"] .redraft-diff-btn`);
+    if (btn) btn.remove();
+}
+
+// ─── Diff Engine ───────────────────────────────────────────────────────────
+
+/**
+ * Tokenize text into words and whitespace for diffing.
+ * Keeps whitespace as separate tokens so formatting is preserved.
+ */
+function tokenize(text) {
+    return text.match(/\S+|\s+/g) || [];
+}
+
+/**
+ * Compute LCS (Longest Common Subsequence) table for two token arrays.
+ */
+function lcsTable(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            dp[i][j] = a[i - 1] === b[j - 1]
+                ? dp[i - 1][j - 1] + 1
+                : Math.max(dp[i - 1][j], dp[i][j - 1]);
+        }
+    }
+    return dp;
+}
+
+/**
+ * Compute word-level diff between original and refined text.
+ * Returns array of {type: 'equal'|'delete'|'insert', text} segments.
+ */
+function computeWordDiff(original, refined) {
+    const a = tokenize(original);
+    const b = tokenize(refined);
+    const dp = lcsTable(a, b);
+
+    // Backtrace to build diff
+    const diff = [];
+    let i = a.length, j = b.length;
+    while (i > 0 || j > 0) {
+        if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+            diff.push({ type: 'equal', text: a[i - 1] });
+            i--; j--;
+        } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+            diff.push({ type: 'insert', text: b[j - 1] });
+            j--;
+        } else {
+            diff.push({ type: 'delete', text: a[i - 1] });
+            i--;
+        }
+    }
+    diff.reverse();
+
+    // Merge consecutive segments of the same type
+    const merged = [];
+    for (const seg of diff) {
+        if (merged.length > 0 && merged[merged.length - 1].type === seg.type) {
+            merged[merged.length - 1].text += seg.text;
+        } else {
+            merged.push({ ...seg });
+        }
+    }
+    return merged;
+}
+
+/**
+ * Show a diff popup comparing original vs refined text.
+ */
+function showDiffPopup(original, refined) {
+    // Remove any existing popup
+    closeDiffPopup();
+
+    if (original === refined) {
+        toastr.info('No changes were made', 'ReDraft');
+        return;
+    }
+
+    const diff = computeWordDiff(original, refined);
+
+    // Build diff HTML
+    const { DOMPurify } = SillyTavern.libs;
+    let diffHtml = '';
+    for (const seg of diff) {
+        const escaped = DOMPurify.sanitize(seg.text, { ALLOWED_TAGS: [] })
+            .replace(/\n/g, '<br>');
+        switch (seg.type) {
+            case 'delete':
+                diffHtml += `<span class="redraft-diff-del">${escaped}</span>`;
+                break;
+            case 'insert':
+                diffHtml += `<span class="redraft-diff-ins">${escaped}</span>`;
+                break;
+            default:
+                diffHtml += escaped;
+        }
+    }
+
+    // Count changes
+    const delCount = diff.filter(s => s.type === 'delete').length;
+    const insCount = diff.filter(s => s.type === 'insert').length;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'redraft_diff_overlay';
+    overlay.classList.add('redraft-diff-overlay');
+    overlay.innerHTML = `
+        <div class="redraft-diff-panel">
+            <div class="redraft-diff-header">
+                <span class="redraft-diff-title">ReDraft Changes</span>
+                <span class="redraft-diff-stats">
+                    <span class="redraft-diff-stat-del">−${delCount}</span>
+                    <span class="redraft-diff-stat-ins">+${insCount}</span>
+                </span>
+                <div class="redraft-diff-close" title="Close">
+                    <i class="fa-solid fa-xmark"></i>
+                </div>
+            </div>
+            <div class="redraft-diff-body">${diffHtml}</div>
+        </div>
+    `;
+
+    // Close handlers
+    overlay.querySelector('.redraft-diff-close').addEventListener('click', closeDiffPopup);
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeDiffPopup();
+    });
+
+    document.body.appendChild(overlay);
+}
+
+function closeDiffPopup() {
+    const overlay = document.getElementById('redraft_diff_overlay');
+    if (overlay) overlay.remove();
 }
 
 // ─── Floating Popout ────────────────────────────────────────────────
@@ -813,6 +982,16 @@ function bindSettingsUI() {
             getSettings().autoRefine = e.target.checked;
             saveSettings();
             updatePopoutAutoState();
+        });
+    }
+
+    // Show diff after refinement toggle
+    const diffEl = document.getElementById('redraft_show_diff');
+    if (diffEl) {
+        diffEl.checked = initSettings.showDiffAfterRefine;
+        diffEl.addEventListener('change', (e) => {
+            getSettings().showDiffAfterRefine = e.target.checked;
+            saveSettings();
         });
     }
 
@@ -1279,6 +1458,10 @@ function registerSlashCommand() {
                     <label class="checkbox_label">
                         <input type="checkbox" id="redraft_auto_refine" />
                         <span>Auto-refine new AI messages</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="redraft_show_diff" />
+                        <span>Show diff after refinement</span>
                     </label>
                     <div class="redraft-form-group">
                         <label for="redraft_system_prompt">System Prompt Override</label>
