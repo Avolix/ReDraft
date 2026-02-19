@@ -137,21 +137,31 @@ function compileRules(settings) {
     for (const [key, rule] of Object.entries(BUILTIN_RULES)) {
         if (settings.builtInRules[key]) {
             rules.push(rule.prompt);
+            console.log(`${LOG_PREFIX} [rules] Built-in ON: ${key}`);
+        } else {
+            console.log(`${LOG_PREFIX} [rules] Built-in OFF: ${key}`);
         }
     }
 
     // Custom rules in order
-    for (const rule of settings.customRules) {
+    for (let i = 0; i < settings.customRules.length; i++) {
+        const rule = settings.customRules[i];
         if (rule.enabled && rule.text && rule.text.trim()) {
             rules.push(rule.text.trim());
+            console.log(`${LOG_PREFIX} [rules] Custom #${i} ON: "${rule.text.trim().substring(0, 80)}${rule.text.trim().length > 80 ? '…' : ''}"`);
+        } else {
+            console.log(`${LOG_PREFIX} [rules] Custom #${i} SKIPPED (enabled=${rule.enabled}, text=${JSON.stringify(rule.text?.substring?.(0, 40) || rule.text)})`);
         }
     }
 
     if (rules.length === 0) {
         rules.push('Improve the overall quality of the message');
+        console.log(`${LOG_PREFIX} [rules] No active rules — using fallback`);
     }
 
-    return rules.map((r, i) => `${i + 1}. ${r}`).join('\n');
+    const compiled = rules.map((r, i) => `${i + 1}. ${r}`).join('\n');
+    console.log(`${LOG_PREFIX} [rules] Compiled ${rules.length} rules total`);
+    return compiled;
 }
 
 /**
@@ -448,6 +458,10 @@ async function redraftMessage(messageIndex) {
             : '';
 
         const promptText = `${contextBlock}Apply the following refinement rules to the message below. Any [DETAILS_BLOCK_N] placeholders are protected regions \u2014 output them exactly as-is.\n\nRules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
+
+        console.log(`${LOG_PREFIX} [prompt] System prompt (${systemPrompt.length} chars):`, systemPrompt.substring(0, 200) + '…');
+        console.log(`${LOG_PREFIX} [prompt] Full refinement prompt (${promptText.length} chars):`);
+        console.log(promptText);
 
         // Call refinement via the appropriate mode
         let refinedText;
