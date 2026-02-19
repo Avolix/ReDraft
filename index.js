@@ -30,7 +30,24 @@ const defaultSettings = Object.freeze({
     customRules: [],
     systemPrompt: '',
     showDiffAfterRefine: true,
+    pov: 'auto', // 'auto' | 'detect' | '1st' | '1.5' | '2nd' | '3rd'
 });
+
+const POV_LABELS = {
+    auto: 'Auto (no instruction)',
+    detect: 'Detect from message',
+    '1st': '1st person (I/me)',
+    '1.5': '1.5th person (I + you)',
+    '2nd': '2nd person (you)',
+    '3rd': '3rd person (he/she/they)',
+};
+
+const POV_INSTRUCTIONS = {
+    '1st': 'The message is written in first person (I/me/my). Maintain this perspective exactly \u2014 do not shift to second or third person.',
+    '1.5': 'The message uses 1.5th-person PoV: first person (I/me/my) for the AI character\'s perspective, and second person (you/your) when referring to the player\'s character. Maintain this hybrid perspective exactly.',
+    '2nd': 'The message is written in second person (you/your). Maintain this perspective exactly \u2014 do not shift to first or third person.',
+    '3rd': 'The message is written in third person (he/she/they + character names). Maintain this perspective exactly \u2014 do not shift to first or second person.',
+};
 
 const BUILTIN_RULES = {
     grammar: {
@@ -135,6 +152,50 @@ function compileRules(settings) {
     }
 
     return rules.map((r, i) => `${i + 1}. ${r}`).join('\n');
+}
+
+/**
+ * Strip <details> blocks from text, replacing with placeholders.
+ * Returns { stripped, blocks } where blocks is the array of original HTML.
+ */
+function stripDetailsBlocks(text) {
+    const blocks = [];
+    const stripped = text.replace(/<details[\s\S]*?<\/details>/gi, (match) => {
+        const idx = blocks.length;
+        blocks.push(match);
+        return `[DETAILS_BLOCK_${idx}]`;
+    });
+    return { stripped, blocks };
+}
+
+/**
+ * Restore <details> blocks from placeholders.
+ */
+function restoreDetailsBlocks(text, blocks) {
+    return text.replace(/\[DETAILS_BLOCK_(\d+)\]/g, (_, idx) => {
+        return blocks[parseInt(idx, 10)] || '';
+    });
+}
+
+/**
+ * Detect the PoV of a text by checking pronoun frequency.
+ * Returns '1st' | '1.5' | '2nd' | '3rd' or null if unclear.
+ */
+function detectPov(text) {
+    const lower = text.toLowerCase();
+    const first = (lower.match(/\b(i|me|my|myself|mine)\b/g) || []).length;
+    const second = (lower.match(/\b(you|your|yours|yourself)\b/g) || []).length;
+    const third = (lower.match(/\b(he|she|they|him|her|them|his|hers|their|theirs)\b/g) || []).length;
+
+    const total = first + second + third;
+    if (total < 3) return null; // Too short to detect
+
+    // 1.5th: significant first AND second person
+    if (first > total * 0.2 && second > total * 0.2) return '1.5';
+    if (first > second && first > third) return '1st';
+    if (second > first && second > third) return '2nd';
+    if (third > first && third > second) return '3rd';
+    return null;
 }
 
 /**
@@ -322,8 +383,9 @@ async function redraftMessage(messageIndex) {
     // Set re-entrancy guard
     isRefining = true;
 
-    // Show loading state on the message button
+    // Show loading state on the message button + toast
     setMessageButtonLoading(messageIndex, true);
+    toastr.info('Refining message\u2026', 'ReDraft');
 
     try {
         // Save original to chatMetadata for undo
@@ -332,6 +394,9 @@ async function redraftMessage(messageIndex) {
         }
         chatMetadata['redraft_originals'][messageIndex] = message.mes;
         await saveMetadata();
+
+        // Strip <details> blocks before sending to LLM
+        const { stripped: strippedMessage, blocks: detailsBlocks } = stripDetailsBlocks(message.mes);
 
         // Build the refinement prompt
         const rulesText = compileRules(settings);
@@ -348,6 +413,21 @@ async function redraftMessage(messageIndex) {
         }
         if (context.name1) {
             contextParts.push(`User character: ${context.name1}`);
+        }
+
+        // Point of view instruction
+        let povKey = settings.pov || 'auto';
+        if (povKey === 'detect') {
+            const detected = detectPov(strippedMessage);
+            if (detected) {
+                povKey = detected;
+                console.debug(`${LOG_PREFIX} Detected PoV: ${detected}`);
+            } else {
+                povKey = 'auto'; // Couldn't detect, skip instruction
+            }
+        }
+        if (povKey !== 'auto' && POV_INSTRUCTIONS[povKey]) {
+            contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
         }
 
         // Last user message (for echo detection)
@@ -367,7 +447,7 @@ async function redraftMessage(messageIndex) {
             ? `Context:\n${contextParts.join('\n\n')}\n\n`
             : '';
 
-        const promptText = `${contextBlock}Apply the following refinement rules to the message below.\n\nRules:\n${rulesText}\n\nOriginal message:\n${message.mes}`;
+        const promptText = `${contextBlock}Apply the following refinement rules to the message below. Any [DETAILS_BLOCK_N] placeholders are protected regions \u2014 output them exactly as-is.\n\nRules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
 
         // Call refinement via the appropriate mode
         let refinedText;
@@ -377,7 +457,8 @@ async function redraftMessage(messageIndex) {
             refinedText = await refineViaST(promptText, systemPrompt);
         }
 
-        // Write refined text back
+        // Restore <details> blocks and write refined text back
+        refinedText = restoreDetailsBlocks(refinedText, detailsBlocks);
         const originalText = message.mes;
         message.mes = refinedText;
         await saveChat();
@@ -1005,6 +1086,20 @@ function bindSettingsUI() {
         });
     }
 
+    // PoV selector
+    const povEl = document.getElementById('redraft_pov');
+    if (povEl) {
+        povEl.value = initSettings.pov || 'auto';
+        povEl.addEventListener('change', (e) => {
+            const s = getSettings();
+            s.pov = e.target.value;
+            // Sync with popout selector
+            const popoutPov = document.getElementById('redraft_popout_pov');
+            if (popoutPov) popoutPov.value = e.target.value;
+            saveSettings();
+        });
+    }
+
     // Built-in rule toggles
     for (const key of Object.keys(BUILTIN_RULES)) {
         const el = document.getElementById(`redraft_rule_${key}`);
@@ -1112,6 +1207,20 @@ function bindSettingsUI() {
             if (autoEl) autoEl.checked = e.target.checked;
             saveSettings();
             updatePopoutAutoState();
+        });
+    }
+
+    // Popout PoV selector
+    const popoutPov = document.getElementById('redraft_popout_pov');
+    if (popoutPov) {
+        popoutPov.value = initSettings.pov || 'auto';
+        popoutPov.addEventListener('change', (e) => {
+            const s = getSettings();
+            s.pov = e.target.value;
+            // Sync with main settings panel
+            const mainPov = document.getElementById('redraft_pov');
+            if (mainPov) mainPov.value = e.target.value;
+            saveSettings();
         });
     }
 
@@ -1420,6 +1529,18 @@ function registerSlashCommand() {
                         </label>
                     </div>
 
+                    <div class="redraft-form-group redraft-pov-group">
+                        <label for="redraft_pov">Point of View</label>
+                        <select id="redraft_pov">
+                            <option value="auto">Auto (no instruction)</option>
+                            <option value="detect">Detect from message</option>
+                            <option value="1st">1st person (I/me)</option>
+                            <option value="1.5">1.5th person (I + you)</option>
+                            <option value="2nd">2nd person (you)</option>
+                            <option value="3rd">3rd person (he/she/they)</option>
+                        </select>
+                    </div>
+
                     <hr />
 
                     <div class="redraft-custom-rules-header">
@@ -1488,6 +1609,17 @@ function registerSlashCommand() {
             <input type="checkbox" id="redraft_popout_auto" />
             <span>Auto-refine</span>
         </label>
+        <div class="redraft-popout-pov">
+            <small>PoV</small>
+            <select id="redraft_popout_pov">
+                <option value="auto">Auto</option>
+                <option value="detect">Detect</option>
+                <option value="1st">1st</option>
+                <option value="1.5">1.5th</option>
+                <option value="2nd">2nd</option>
+                <option value="3rd">3rd</option>
+            </select>
+        </div>
         <div id="redraft_popout_status" class="redraft-popout-status"></div>
         <div id="redraft_popout_refine" class="menu_button">
             <i class="fa-solid fa-pen-nib"></i>

@@ -88,6 +88,35 @@
     min-height: 1.2em;
 }
 
+.redraft-popout-pov {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.redraft-popout-pov small {
+    opacity: 0.6;
+    white-space: nowrap;
+}
+
+.redraft-popout-pov select {
+    flex: 1;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    padding: 2px 4px;
+    border-radius: 4px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBlurTintColor, var(--SmartThemeChatTintColor));
+    color: var(--SmartThemeBodyColor);
+}
+
+.redraft-pov-group select {
+    padding: 4px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBlurTintColor, var(--SmartThemeChatTintColor));
+    color: var(--SmartThemeBodyColor);
+}
+
 /* Settings panel */
 .redraft-form-group {
     display: flex;
