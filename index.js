@@ -10,6 +10,7 @@
 const MODULE_NAME = 'redraft';
 const PLUGIN_BASE = '/api/plugins/redraft';
 const LOG_PREFIX = '[ReDraft]';
+console.warn('[ReDraft] *** FILE VERSION CHECK — If you see this, the latest index.js is loaded ***');
 
 // ─── Default Settings ───────────────────────────────────────────────
 
