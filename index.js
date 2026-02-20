@@ -32,6 +32,7 @@ const defaultSettings = Object.freeze({
     systemPrompt: '',
     showDiffAfterRefine: true,
     pov: 'auto', // 'auto' | 'detect' | '1st' | '1.5' | '2nd' | '3rd'
+    hasSeenHint: false,
 });
 
 const POV_LABELS = {
@@ -191,8 +192,14 @@ function stripProtectedBlocks(text) {
         return `[PROTECTED_${blocks.length - 1}]`;
     });
 
-    // 2. HTML/XML block elements: <tag ...>...</tag>
-    result = result.replace(/<(\w[\w-]*)\b[^>]*>[\s\S]*?<\/\1>/gi, (match) => {
+    // 2. HTML block-level elements only (not inline formatting like em, span, b, i)
+    //    Protects: details, div, table, section, aside, article, nav, pre, fieldset, figure
+    //    Also protects custom elements (tags containing hyphens, e.g. <sim-tracker>)
+    const blockTags = 'details|div|table|section|aside|article|nav|pre|fieldset|figure';
+    const blockRegex = new RegExp(
+        `<((?:${blockTags}|\\w+-\\w[\\w-]*))(\\b[^>]*)>[\\s\\S]*?<\\/\\1>`, 'gi'
+    );
+    result = result.replace(blockRegex, (match) => {
         blocks.push(match);
         return `[PROTECTED_${blocks.length - 1}]`;
     });
@@ -1669,6 +1676,18 @@ function registerSlashCommand() {
 
     // Create floating popout trigger
     createPopoutTrigger();
+
+    // First-run hint — show once to help users find the popout
+    const initSettings = getSettings();
+    if (!initSettings.hasSeenHint) {
+        toastr.info(
+            'Use the ✏️ button in the bottom-right corner to quickly refine messages, toggle auto-refine, and adjust settings.',
+            'ReDraft — Tip',
+            { timeOut: 8000, extendedTimeOut: 4000, positionClass: 'toast-bottom-right' }
+        );
+        initSettings.hasSeenHint = true;
+        saveSettings();
+    }
 
     // Check plugin status
     await checkPluginStatus();
