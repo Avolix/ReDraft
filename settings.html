@@ -6,17 +6,7 @@
         </div>
         <div class="inline-drawer-content">
 
-            <!-- Server Plugin Install Banner (shown only when plugin unavailable) -->
-            <div id="redraft_plugin_banner" class="redraft-plugin-banner" style="display: none;">
-                <div class="redraft-banner-text">
-                    <i class="fa-solid fa-info-circle"></i>
-                    <span>Using ST's built-in API. For a separate refinement LLM, install the server plugin.</span>
-                </div>
-                <div id="redraft_install_btn" class="menu_button" title="Show install command">
-                    <i class="fa-solid fa-download"></i>
-                    <span>Install Server Plugin</span>
-                </div>
-            </div>
+
 
             <!-- Connection Section -->
             <div class="inline-drawer">
@@ -30,7 +20,7 @@
                         <label for="redraft_connection_mode">Refinement Mode</label>
                         <select id="redraft_connection_mode">
                             <option value="st">Use current ST connection</option>
-                            <option value="plugin">Use separate LLM (server plugin)</option>
+                            <option value="plugin" disabled>Separate LLM (Coming Soon)</option>
                         </select>
                     </div>
 
@@ -172,26 +162,5 @@
             <i class="fa-solid fa-gear"></i>
             <span>Full Settings</span>
         </div>
-    </div>
-</div>
-
-<!-- Install Command Dialog (hidden, shown by JS) -->
-<div id="redraft_install_dialog" class="redraft-install-dialog" style="display: none;">
-    <div class="redraft-install-dialog-content">
-        <div class="redraft-install-dialog-header">
-            <span>Install ReDraft Server Plugin</span>
-            <div id="redraft_install_dialog_close" class="dragClose" title="Close">
-                <i class="fa-solid fa-xmark"></i>
-            </div>
-        </div>
-        <p>Run this command in your SillyTavern root directory, then restart:</p>
-        <div class="redraft-install-command-block">
-            <code id="redraft_install_command"></code>
-            <div id="redraft_copy_command" class="menu_button" title="Copy to clipboard">
-                <i class="fa-solid fa-copy"></i>
-            </div>
-        </div>
-        <small class="redraft-install-hint">This copies the plugin files and enables server plugins in your
-            config.</small>
     </div>
 </div>

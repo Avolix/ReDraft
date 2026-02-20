@@ -328,18 +328,6 @@ function updateConnectionModeUI() {
         stModeInfo.style.display = settings.connectionMode === 'st' ? '' : 'none';
     }
 
-    // Disable plugin option if plugin not available
-    const pluginOption = document.querySelector('#redraft_connection_mode option[value="plugin"]');
-    if (pluginOption) {
-        if (!pluginAvailable) {
-            pluginOption.disabled = true;
-            pluginOption.textContent = 'Use separate LLM (plugin not installed)';
-        } else {
-            pluginOption.disabled = false;
-            pluginOption.textContent = 'Use separate LLM (server plugin)';
-        }
-    }
-
     updateStatusDot(null);
     updatePluginBanner();
 }
