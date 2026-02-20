@@ -7,7 +7,7 @@ Refines AI-generated messages by sending them (with configurable quality rules) 
 Paste this URL into SillyTavern's **Extensions > Install Extension** dialog:
 
 ```
-https://github.com/Avolix/ReDraft
+https://github.com/MeowCatboyMeow/ReDraft
 ```
 
 Works immediately using your current ST connection. No extra setup needed.
