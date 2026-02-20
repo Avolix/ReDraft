@@ -88,7 +88,6 @@ const BUILTIN_RULES = {
 const DEFAULT_SYSTEM_PROMPT = `You are a roleplay prose editor. You refine AI-generated roleplay messages by applying specific rules while preserving the author's creative intent.
 
 Core principles:
-- Return ONLY the refined message text \u2014 no commentary, explanations, OOC notes, or meta-text
 - Preserve the original meaning, narrative direction, and emotional tone
 - Preserve the original paragraph structure and sequence of events \u2014 do not reorder content, merge paragraphs, or restructure the narrative flow
 - Edits are surgical: change the minimum necessary to satisfy the active rules. Fix the violating sentence, not the paragraph around it
@@ -98,6 +97,17 @@ Core principles:
 - Maintain existing formatting conventions (e.g. *asterisks for actions*, "quotes for dialogue")
 - Treat each character as a distinct voice \u2014 do not flatten dialogue into a single register
 - When rules conflict, character voice and narrative intent take priority over technical polish
+
+Output format (MANDATORY \u2014 always follow this structure):
+1. First, output a changelog inside [CHANGELOG]...[/CHANGELOG] tags listing each change you made and which rule motivated it. One line per change. If a rule required no changes, omit it.
+2. Then output the full refined message with no other commentary.
+
+Example:
+[CHANGELOG]
+- Grammar: Fixed \"their\" \u2192 \"they're\" in paragraph 2
+- Repetition: Replaced 3rd use of \"softly\" with \"gently\"
+[/CHANGELOG]
+(refined message here)
 
 You will be given the original message, a set of refinement rules to apply, and optionally context about the characters and recent conversation. Apply the rules faithfully.`;
 
@@ -473,15 +483,7 @@ async function redraftMessage(messageIndex) {
 
         const promptText = `${contextBlock}Apply the following refinement rules to the message below. Any [DETAILS_BLOCK_N] placeholders are protected regions \u2014 output them exactly as-is.
 
-Before the refined message, output a brief changelog inside [CHANGELOG]...[/CHANGELOG] tags. For each change you made, note which rule motivated it and what you changed. Be concise \u2014 one line per change. If a rule required no changes, omit it. Example format:
-
-[CHANGELOG]
-- Grammar: Fixed \"their\" \u2192 \"they're\" in paragraph 2
-- Repetition: Replaced 3rd use of \"softly\" with \"gently\"
-- Echo: Removed restated player action in dialogue
-[/CHANGELOG]
-
-Then output the full refined message (with no extra commentary).
+Remember: output [CHANGELOG]...[/CHANGELOG] first, then the refined message.
 
 Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
 
