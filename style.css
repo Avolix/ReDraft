@@ -461,6 +461,8 @@
     color: var(--SmartThemeBodyColor);
     white-space: pre-wrap;
     word-wrap: break-word;
+    flex: 1;
+    min-height: 0;
 }
 
 /* GitHub-style inline diff highlighting */
@@ -527,4 +529,6 @@
     color: var(--SmartThemeBodyColor);
     opacity: 0.85;
     padding-left: 4px;
+    max-height: 25vh;
+    overflow-y: auto;
 }

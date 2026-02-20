@@ -773,7 +773,7 @@ function showDiffPopup(original, refined, changelog = null) {
         const sanitizedLog = DOMPurify.sanitize(changelog, { ALLOWED_TAGS: [] })
             .replace(/\n/g, '<br>');
         changelogHtml = `
-            <details class="redraft-changelog" open>
+            <details class="redraft-changelog">
                 <summary class="redraft-changelog-summary">
                     <i class="fa-solid fa-clipboard-list"></i> Change Log
                 </summary>
