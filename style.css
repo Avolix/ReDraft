@@ -532,3 +532,59 @@
     max-height: 25vh;
     overflow-y: auto;
 }
+
+/* ─── Mobile responsive diff popup ─────────────────────────────────── */
+@media (max-width: 600px) {
+    .redraft-diff-panel {
+        width: 100vw;
+        max-height: 100vh;
+        height: 100vh;
+        border-radius: 0;
+        border: none;
+    }
+
+    .redraft-diff-overlay {
+        align-items: stretch;
+    }
+
+    .redraft-diff-header {
+        padding: 10px 12px;
+        gap: 6px;
+        flex-wrap: wrap;
+    }
+
+    .redraft-diff-title {
+        font-size: var(--mainFontSize);
+    }
+
+    .redraft-diff-close {
+        padding: 8px 12px;
+        margin-left: auto;
+        /* Larger tap target for mobile */
+        min-width: 44px;
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .redraft-diff-body {
+        padding: 12px;
+        font-size: calc(var(--mainFontSize) * 0.95);
+        line-height: 1.6;
+    }
+
+    .redraft-changelog {
+        padding: 8px 12px;
+    }
+
+    .redraft-changelog-body {
+        max-height: 30vh;
+    }
+
+    .redraft-diff-stat-del,
+    .redraft-diff-stat-ins {
+        padding: 2px 6px;
+        font-size: calc(var(--mainFontSize) * 0.8);
+    }
+}

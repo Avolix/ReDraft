@@ -202,13 +202,34 @@ function restoreDetailsBlocks(text, blocks) {
  * Parse a [CHANGELOG] block from the LLM response.
  * Returns { changelog, refined } where changelog is the extracted text (or null)
  * and refined is the message with the changelog block removed.
+ *
+ * Key design: only text AFTER the changelog block is treated as the refined
+ * message. Any LLM preamble/reasoning before the tags is discarded.
  */
 function parseChangelog(responseText) {
-    const match = responseText.match(/\[CHANGELOG\]\s*([\s\S]*?)\s*\[\/CHANGELOG\]/i);
-    if (!match) return { changelog: null, refined: responseText.trim() };
-    const changelog = match[1].trim();
-    const refined = responseText.replace(/\[CHANGELOG\][\s\S]*?\[\/CHANGELOG\]/i, '').trim();
-    return { changelog, refined };
+    // Try strict match first: [CHANGELOG]...[/CHANGELOG]
+    let match = responseText.match(/\[CHANGELOG\]\s*([\s\S]*?)\s*\[\/CHANGELOG\]/i);
+    if (match) {
+        const changelog = match[1].trim();
+        // Only keep text AFTER the changelog block — discard any LLM preamble before it
+        const afterChangelog = responseText.substring(match.index + match[0].length).trim();
+        return { changelog, refined: afterChangelog };
+    }
+
+    // Fallback: unclosed [CHANGELOG] tag — split on double-newline to find the message
+    match = responseText.match(/\[CHANGELOG\]\s*([\s\S]*?)$/i);
+    if (match) {
+        const remainder = match[1];
+        // Look for a double-newline gap separating changelog from refined text
+        const splitIdx = remainder.search(/\n\s*\n/);
+        if (splitIdx !== -1) {
+            const changelog = remainder.substring(0, splitIdx).trim();
+            const refined = remainder.substring(splitIdx).trim();
+            return { changelog, refined };
+        }
+    }
+
+    return { changelog: null, refined: responseText.trim() };
 }
 
 /**
