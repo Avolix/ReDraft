@@ -121,6 +121,20 @@ You will be given the original message, a set of refinement rules to apply, and 
 let isRefining = false; // Re-entrancy guard
 let pluginAvailable = false; // Whether server plugin is reachable
 let eventListenerRefs = {}; // For cleanup
+let _popoutOutsideClickRef = null; // Ref to the click-outside listener for cleanup
+
+/**
+ * Hide the popout panel and clean up the click-outside listener.
+ * All code paths that close the popout should call this.
+ */
+function hidePopout() {
+    const panel = document.getElementById('redraft_popout_panel');
+    if (panel) panel.style.display = 'none';
+    if (_popoutOutsideClickRef) {
+        document.removeEventListener('pointerdown', _popoutOutsideClickRef, true);
+        _popoutOutsideClickRef = null;
+    }
+}
 
 // Global keydown handler for ESC
 function onGlobalKeydown(e) {
@@ -130,7 +144,7 @@ function onGlobalKeydown(e) {
     if (diffOverlay) { closeDiffPopup(); return; }
     // Then close popout
     const popout = document.getElementById('redraft_popout_panel');
-    if (popout && popout.style.display !== 'none') { popout.style.display = 'none'; }
+    if (popout && popout.style.display !== 'none') { hidePopout(); }
 }
 document.addEventListener('keydown', onGlobalKeydown);
 
@@ -763,8 +777,8 @@ function showDiffButton(messageIndex, originalText, refinedText, changelog = nul
 
     // Insert after undo, or after refine, for consistent order: [refine] [undo] [diff]
     const undoBtn = buttonsRow.querySelector('.redraft-undo-btn');
-    const refineBtn2 = buttonsRow.querySelector('.redraft-msg-btn');
-    const anchor = undoBtn || refineBtn2;
+    const refineBtn = buttonsRow.querySelector('.redraft-msg-btn');
+    const anchor = undoBtn || refineBtn;
     if (anchor) {
         anchor.after(btn);
     } else {
@@ -952,27 +966,30 @@ function togglePopout() {
     const panel = document.getElementById('redraft_popout_panel');
     if (!panel) return;
     const isVisible = panel.style.display !== 'none';
-    panel.style.display = isVisible ? 'none' : 'block';
 
-    if (!isVisible) {
-        const autoCheckbox = document.getElementById('redraft_popout_auto');
-        if (autoCheckbox) {
-            autoCheckbox.checked = getSettings().autoRefine;
-        }
-        updatePopoutStatus();
-
-        // Click-outside to close
-        const closeOnOutsideClick = (e) => {
-            if (!panel.contains(e.target) && !e.target.closest('.redraft-popout-trigger')) {
-                panel.style.display = 'none';
-                document.removeEventListener('pointerdown', closeOnOutsideClick, true);
-            }
-        };
-        // Defer so the opening click doesn't immediately close it
-        requestAnimationFrame(() => {
-            document.addEventListener('pointerdown', closeOnOutsideClick, true);
-        });
+    if (isVisible) {
+        hidePopout();
+        return;
     }
+
+    panel.style.display = 'block';
+
+    const autoCheckbox = document.getElementById('redraft_popout_auto');
+    if (autoCheckbox) {
+        autoCheckbox.checked = getSettings().autoRefine;
+    }
+    updatePopoutStatus();
+
+    // Click-outside to close — store ref so hidePopout() can clean it up
+    _popoutOutsideClickRef = (e) => {
+        if (!panel.contains(e.target) && !e.target.closest('.redraft-popout-trigger')) {
+            hidePopout();
+        }
+    };
+    // Defer so the opening click doesn't immediately close it
+    requestAnimationFrame(() => {
+        document.addEventListener('pointerdown', _popoutOutsideClickRef, true);
+    });
 }
 
 function updatePopoutAutoState() {
@@ -1357,7 +1374,7 @@ function bindSettingsUI() {
     // Popout panel bindings
     const popoutClose = document.getElementById('redraft_popout_close');
     if (popoutClose) {
-        popoutClose.addEventListener('click', togglePopout);
+        popoutClose.addEventListener('click', hidePopout);
     }
 
     const popoutAuto = document.getElementById('redraft_popout_auto');
