@@ -484,6 +484,11 @@ async function redraftMessage(messageIndex) {
     // Set re-entrancy guard
     isRefining = true;
 
+    // Clean up stale undo/diff buttons from prior refinement of this message
+    // (fixes compare showing wrong diff after swiping in auto mode)
+    hideUndoButton(messageIndex);
+    hideDiffButton(messageIndex);
+
     // Show loading state on the message button + toast
     setMessageButtonLoading(messageIndex, true);
     toastr.info('Refining message\u2026', 'ReDraft');
@@ -963,13 +968,14 @@ function renderCustomRules() {
         item.innerHTML = `
             <span class="drag-handle" title="Drag to reorder"><i class="fa-solid fa-grip-vertical"></i></span>
             <input type="checkbox" class="redraft-rule-toggle" ${rule.enabled ? 'checked' : ''} />
-            <input type="text" class="text_pole redraft-rule-text" value="${DOMPurify.sanitize(rule.text || '')}" placeholder="Enter rule..." />
+            <textarea class="text_pole redraft-rule-text" rows="1" placeholder="Enter rule...">${DOMPurify.sanitize(rule.text || '')}</textarea>
             <button class="redraft-delete-rule" title="Remove rule"><i class="fa-solid fa-trash-can"></i></button>
         `;
 
         item.querySelector('.redraft-rule-toggle').addEventListener('change', (e) => {
             getSettings().customRules[index].enabled = e.target.checked;
             saveSettings();
+            updateCustomRulesToggle();
         });
 
         item.querySelector('.redraft-rule-text').addEventListener('input', (e) => {
@@ -987,6 +993,25 @@ function renderCustomRules() {
     });
 
     initDragReorder(container);
+    updateCustomRulesToggle();
+}
+
+/**
+ * Sync the master custom-rules toggle state.
+ * Checked = all enabled, unchecked = all disabled, indeterminate = mixed.
+ */
+function updateCustomRulesToggle() {
+    const toggle = document.getElementById('redraft_custom_rules_toggle');
+    if (!toggle) return;
+    const rules = getSettings().customRules;
+    if (rules.length === 0) {
+        toggle.checked = false;
+        toggle.indeterminate = false;
+        return;
+    }
+    const enabledCount = rules.filter(r => r.enabled).length;
+    toggle.checked = enabledCount === rules.length;
+    toggle.indeterminate = enabledCount > 0 && enabledCount < rules.length;
 }
 
 function initDragReorder(container) {
@@ -1242,6 +1267,18 @@ function bindSettingsUI() {
         exportBtn.addEventListener('click', exportCustomRules);
     }
 
+    // Master custom-rules toggle
+    const customRulesToggle = document.getElementById('redraft_custom_rules_toggle');
+    if (customRulesToggle) {
+        customRulesToggle.addEventListener('change', (e) => {
+            const s = getSettings();
+            const enable = e.target.checked;
+            s.customRules.forEach(r => r.enabled = enable);
+            saveSettings();
+            renderCustomRules();
+        });
+    }
+
     // Add custom rule button
     const addRuleBtn = document.getElementById('redraft_add_rule');
 
@@ -1253,7 +1290,7 @@ function bindSettingsUI() {
             saveSettings();
             renderCustomRules();
 
-            // Auto-focus the new rule's text input
+            // Auto-focus the new rule's textarea
             const ruleInputs = document.querySelectorAll('.redraft-rule-text');
 
             if (ruleInputs.length > 0) {
@@ -1605,7 +1642,10 @@ function registerSlashCommand() {
                     <hr />
 
                     <div class="redraft-custom-rules-header">
-                        <small>Custom Rules (ordered by priority)</small>
+                        <label class="checkbox_label" style="margin:0;gap:4px;">
+                            <input type="checkbox" id="redraft_custom_rules_toggle" title="Enable/disable all custom rules" />
+                            <small>Custom Rules (ordered by priority)</small>
+                        </label>
                         <div>
                             <div id="redraft_import_rules" class="menu_button menu_button_icon" title="Import rules from JSON">
                                 <i class="fa-solid fa-file-import"></i>
