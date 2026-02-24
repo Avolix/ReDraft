@@ -99,6 +99,12 @@
     gap: 8px;
 }
 
+/* Spacing: checkbox between form groups (e.g. Protect font/color tags) */
+#redraft_settings .inline-drawer-content > .checkbox_label {
+    margin-top: 4px;
+    margin-bottom: 2px;
+}
+
 .redraft-popout-status {
     font-size: calc(var(--mainFontSize) * 0.8);
     opacity: 0.5;
@@ -126,12 +132,16 @@
     color: var(--SmartThemeBodyColor);
 }
 
+/* All selects in form groups (PoV, Connection, Character context, Previous response tail) — match ST */
+.redraft-form-group select,
 .redraft-pov-group select {
     padding: 4px 6px;
     border-radius: 4px;
     border: 1px solid var(--SmartThemeBorderColor);
     background: var(--SmartThemeBlurTintColor, var(--SmartThemeChatTintColor));
     color: var(--SmartThemeBodyColor);
+    font-size: var(--mainFontSize);
+    font-family: var(--mainFontFamily);
 }
 
 /* Settings panel */
