@@ -223,9 +223,9 @@ function stripProtectedBlocks(text) {
     });
 
     // 2. HTML block-level elements only (not inline formatting like em, span, b, i)
-    //    Protects: details, div, table, section, aside, article, nav, pre, fieldset, figure
+    //    Protects: details, div, table, section, aside, article, nav, pre, fieldset, figure, timeline
     //    Also protects custom/extension elements (tags with hyphens or underscores, e.g. <sim-tracker>, <lumia_ooc>)
-    const blockTags = 'details|div|table|section|aside|article|nav|pre|fieldset|figure';
+    const blockTags = 'details|div|table|section|aside|article|nav|pre|fieldset|figure|timeline';
     const blockRegex = new RegExp(
         `<((?:${blockTags}|\\w+[-_]\\w[\\w-]*))(\\b[^>]*)>[\\s\\S]*?<\\/\\1>`, 'gi'
     );
