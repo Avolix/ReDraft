@@ -247,12 +247,17 @@ function stripProtectedBlocks(text) {
 
 /**
  * Restore protected blocks from placeholders.
+ * Handles both [PROTECTED_N] (replaced with block content) and [/PROTECTED_N]
+ * (stray closing tags some LLMs output — removed so they don't leak into the message).
  */
 function restoreProtectedBlocks(text, blocks) {
-    // Replace placeholders that the LLM kept intact
+    // Replace placeholders that the LLM kept intact with the original block content
     let result = text.replace(/\[PROTECTED_(\d+)\]/g, (_, idx) => {
         return blocks[parseInt(idx, 10)] || '';
     });
+
+    // Remove any [/PROTECTED_N] that the LLM output (e.g. treating placeholders as paired tags)
+    result = result.replace(/\[\/PROTECTED_(\d+)\]/g, '');
 
     // Safety net: if the LLM dropped any placeholders, append the missing content
     // so protected blocks are never permanently lost
