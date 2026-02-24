@@ -33,6 +33,9 @@ const defaultSettings = Object.freeze({
     showDiffAfterRefine: true,
     pov: 'auto', // 'auto' | 'detect' | '1st' | '1.5' | '2nd' | '3rd'
     hasSeenHint: false,
+    characterContextChars: 500,
+    previousResponseTailChars: 200,
+    protectFontTags: false,
 });
 
 const POV_LABELS = {
@@ -210,9 +213,11 @@ function compileRules(settings) {
  * Strip structured content from text, replacing with placeholders.
  * Protects code fences, HTML/XML tags, and bracket-delimited blocks
  * from being mangled by the refinement LLM.
+ * @param {string} text - Message text
+ * @param {{ protectFontTags?: boolean }} [options] - When protectFontTags is true, also protect <font>...</font> (e.g. HexColor)
  * Returns { stripped, blocks } where blocks is the array of original content.
  */
-function stripProtectedBlocks(text) {
+function stripProtectedBlocks(text, options = {}) {
     const blocks = [];
     let result = text;
 
@@ -241,6 +246,14 @@ function stripProtectedBlocks(text) {
         blocks.push(match);
         return `[PROTECTED_${blocks.length - 1}]`;
     });
+
+    // 4. Optional: <font ...>...</font> (e.g. HexColor). Best-effort for simple, non-nested usage.
+    if (options.protectFontTags) {
+        result = result.replace(/<font[^>]*>[\s\S]*?<\/font>/gi, (match) => {
+            blocks.push(match);
+            return `[PROTECTED_${blocks.length - 1}]`;
+        });
+    }
 
     return { stripped: result, blocks };
 }
@@ -533,8 +546,10 @@ async function redraftMessage(messageIndex) {
         chatMetadata['redraft_originals'][messageIndex] = message.mes;
         await saveMetadata();
 
-        // Strip structured content (code fences, HTML, bracket blocks) before sending to LLM
-        const { stripped: strippedMessage, blocks: protectedBlocks } = stripProtectedBlocks(message.mes);
+        // Strip structured content (code fences, HTML, bracket blocks, optionally font tags) before sending to LLM
+        const { stripped: strippedMessage, blocks: protectedBlocks } = stripProtectedBlocks(message.mes, {
+            protectFontTags: settings.protectFontTags,
+        });
 
         // Build the refinement prompt
         const rulesText = compileRules(settings);
@@ -543,8 +558,9 @@ async function redraftMessage(messageIndex) {
         // Gather context for the LLM
         const contextParts = [];
         const char = context.characters?.[context.characterId];
+        const charLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
         const charDesc = char?.data?.personality
-            || char?.data?.description?.substring(0, 500)
+            || char?.data?.description?.substring(0, charLimit)
             || '';
         if (context.name2 || charDesc) {
             contextParts.push(`Character: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
@@ -577,8 +593,9 @@ async function redraftMessage(messageIndex) {
         // Previous AI response ending (for repetition detection)
         const prevAiMsgs = chat.filter((m, i) => !m.is_user && m.mes && i < messageIndex);
         if (prevAiMsgs.length > 0) {
-            const prevTail = prevAiMsgs[prevAiMsgs.length - 1].mes.slice(-200);
-            contextParts.push(`Previous response ending (last ~200 chars):\n${prevTail}`);
+            const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
+            const prevTail = prevAiMsgs[prevAiMsgs.length - 1].mes.slice(-tailChars);
+            contextParts.push(`Previous response ending (last ~${tailChars} chars):\n${prevTail}`);
         }
 
         const contextBlock = contextParts.length > 0
@@ -1304,6 +1321,38 @@ function bindSettingsUI() {
         });
     }
 
+    // Character context length
+    const charContextEl = document.getElementById('redraft_character_context_chars');
+    if (charContextEl) {
+        const val = initSettings.characterContextChars ?? 500;
+        charContextEl.value = String([500, 1000, 2000].includes(val) ? val : 500);
+        charContextEl.addEventListener('change', (e) => {
+            getSettings().characterContextChars = parseInt(e.target.value, 10);
+            saveSettings();
+        });
+    }
+
+    // Previous response tail length
+    const prevTailEl = document.getElementById('redraft_previous_response_tail');
+    if (prevTailEl) {
+        const val = initSettings.previousResponseTailChars ?? 200;
+        prevTailEl.value = String([100, 200, 400].includes(val) ? val : 200);
+        prevTailEl.addEventListener('change', (e) => {
+            getSettings().previousResponseTailChars = parseInt(e.target.value, 10);
+            saveSettings();
+        });
+    }
+
+    // Protect font/color tags
+    const protectFontEl = document.getElementById('redraft_protect_font_tags');
+    if (protectFontEl) {
+        protectFontEl.checked = initSettings.protectFontTags === true;
+        protectFontEl.addEventListener('change', (e) => {
+            getSettings().protectFontTags = e.target.checked;
+            saveSettings();
+        });
+    }
+
     // Built-in rule toggles
     for (const key of Object.keys(BUILTIN_RULES)) {
         const el = document.getElementById(`redraft_rule_${key}`);
@@ -1767,6 +1816,26 @@ function registerSlashCommand() {
                             <option value="3rd">3rd person (he/she/they)</option>
                         </select>
                     </div>
+                    <div class="redraft-form-group">
+                        <label for="redraft_character_context_chars">Character context (chars)</label>
+                        <select id="redraft_character_context_chars">
+                            <option value="500">500</option>
+                            <option value="1000">1000</option>
+                            <option value="2000">2000</option>
+                        </select>
+                    </div>
+                    <div class="redraft-form-group">
+                        <label for="redraft_previous_response_tail">Previous response tail (chars)</label>
+                        <select id="redraft_previous_response_tail">
+                            <option value="100">100</option>
+                            <option value="200">200</option>
+                            <option value="400">400</option>
+                        </select>
+                    </div>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="redraft_protect_font_tags" />
+                        <span>Protect font/color tags</span>
+                    </label>
                     <div class="redraft-form-group">
                         <label for="redraft_system_prompt">System Prompt Override</label>
                         <textarea id="redraft_system_prompt" class="text_pole textarea_compact" rows="3"
