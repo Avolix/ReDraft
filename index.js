@@ -357,6 +357,7 @@ function detectPov(text) {
 
 /**
  * Call the server plugin API.
+ * Handles HTML responses (e.g. 404/login pages) with a clear error instead of "is not valid JSON".
  */
 async function pluginRequest(endpoint, method = 'GET', body = null) {
     const options = {
@@ -367,9 +368,23 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
         options.body = JSON.stringify(body);
     }
     const response = await fetch(`${PLUGIN_BASE}${endpoint}`, options);
-    const data = await response.json();
+    const text = await response.text();
+
+    let data;
+    try {
+        data = text ? JSON.parse(text) : null;
+    } catch {
+        const trimmed = (text || '').trim();
+        if (trimmed.startsWith('<') || trimmed.toLowerCase().startsWith('<!doctype')) {
+            throw new Error(
+                'Server returned a web page instead of JSON. The ReDraft plugin may not be installed or the URL may be wrong. Install the server plugin and restart SillyTavern, or check that you are using the correct SillyTavern address.'
+            );
+        }
+        throw new Error(`Invalid response from server: ${trimmed.slice(0, 80)}${trimmed.length > 80 ? '…' : ''}`);
+    }
+
     if (!response.ok) {
-        throw new Error(data.error || `Server returned ${response.status}`);
+        throw new Error(data?.error || `Server returned ${response.status}`);
     }
     return data;
 }
@@ -1609,7 +1624,7 @@ async function testConnection() {
         updateConnectionModeUI();
     } catch (err) {
         toastr.error(
-            'Plugin unreachable. Install the ReDraft server plugin and restart SillyTavern. See install instructions in the README.',
+            err?.message || 'Plugin unreachable. Install the ReDraft server plugin and restart SillyTavern. See install instructions in the README.',
             'ReDraft',
             { timeOut: 8000 }
         );

@@ -183,14 +183,26 @@ async function init(router) {
 
             clearTimeout(timeout);
 
+            const rawBody = await response.text();
+
             if (!response.ok) {
-                const errorBody = await response.text();
-                const sanitized = sanitizeError(errorBody);
+                const sanitized = sanitizeError(rawBody);
                 console.error(`[${MODULE_NAME}] LLM API error (${response.status}):`, sanitized);
                 return res.status(502).json({ error: `LLM API returned ${response.status}: ${sanitized.slice(0, 200)}` });
             }
 
-            const data = await response.json();
+            let data;
+            try {
+                data = rawBody ? JSON.parse(rawBody) : null;
+            } catch {
+                const trimmed = (rawBody || '').trim();
+                if (trimmed.startsWith('<') || trimmed.toLowerCase().startsWith('<!doctype')) {
+                    console.error(`[${MODULE_NAME}] LLM API returned HTML instead of JSON`);
+                    return res.status(502).json({ error: 'API returned a web page instead of JSON. Check your API URL (e.g. use the API base URL, not a login or docs page).' });
+                }
+                return res.status(502).json({ error: `API returned invalid JSON: ${trimmed.slice(0, 100)}…` });
+            }
+
             const text = data?.choices?.[0]?.message?.content;
 
             if (!text) {
