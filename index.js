@@ -381,7 +381,8 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
         options.body = JSON.stringify(body);
     }
     const base = getPluginBaseUrl();
-    const response = await fetch(`${base}${endpoint}`, options);
+    const url = `${base}${endpoint}`;
+    const response = await fetch(url, options);
     const text = await response.text();
 
     let data;
@@ -390,8 +391,18 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
     } catch {
         const trimmed = (text || '').trim();
         if (trimmed.startsWith('<') || trimmed.toLowerCase().startsWith('<!doctype')) {
+            const fullUrl = typeof window !== 'undefined' && window.location
+                ? new URL(url, window.location.origin).href
+                : url;
+            const isLocalhost = typeof window !== 'undefined' && window.location &&
+                /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(window.location.origin);
             throw new Error(
-                'Server returned a web page instead of JSON. The ReDraft plugin may not be installed or the URL may be wrong. Install the server plugin and restart SillyTavern, or check that you are using the correct SillyTavern address.'
+                `Server returned a web page instead of JSON. ` +
+                (isLocalhost
+                    ? 'On localhost this usually means the ReDraft server plugin is not installed or not enabled. '
+                    : 'The ReDraft plugin may not be installed or the URL may be wrong. ') +
+                `Request was: ${fullUrl} — open that link in a new tab to see what the server returns. ` +
+                `Run the installer (see INSTALL_PLUGIN.md), set enableServerPlugins: true in config.yaml, then restart SillyTavern.`
             );
         }
         throw new Error(`Invalid response from server: ${trimmed.slice(0, 80)}${trimmed.length > 80 ? '…' : ''}`);

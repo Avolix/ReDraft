@@ -16,7 +16,7 @@ Works immediately using your current ST connection. No extra setup needed.
 
 To use a **different API/model only for refinement** (e.g. a faster or cheaper model while your main chat uses another):
 
-1. **One-time:** Install the ReDraft server plugin — see **[INSTALL_PLUGIN.md](INSTALL_PLUGIN.md)** for exact commands and troubleshooting.
+1. **One-time:** Install the ReDraft server plugin — see **[INSTALL_PLUGIN.md](INSTALL_PLUGIN.md)** for exact commands and troubleshooting. (That doc also explains [when you need to reinstall](INSTALL_PLUGIN.md#when-to-reinstall-the-server-plugin) after updates.)
 2. Restart SillyTavern.
 3. In ReDraft settings → **Connection** → choose **Separate LLM (server plugin)** → enter API URL, Key, and Model → **Save Connection** → **Test Connection**.
 

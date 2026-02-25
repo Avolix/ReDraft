@@ -1,3 +1,8 @@
+/**
+ * ReDraft server plugin — runs inside SillyTavern and proxies refine requests to a separate LLM.
+ * Changes to this file require users to re-run server-plugin/install.js and restart ST.
+ * Note "Server plugin update required" in release notes / INSTALL_PLUGIN.md when releasing such changes.
+ */
 const path = require('path');
 const fs = require('fs');
 

@@ -92,6 +92,16 @@ Credentials are saved on the server (in the plugin’s `config.json`), not in th
 
 ---
 
+## When to reinstall the server plugin
+
+You **must** re-run the installer and restart SillyTavern when the **server plugin** code changes (e.g. after updating ReDraft and the changelog or release notes say “server plugin update required”). The running plugin lives in `plugins/redraft/`; the installer copies the latest `index.js` (and `config.json.example`) from the extension into that folder.
+
+You **do not** need to reinstall when only the **extension** (client) changes — e.g. UI, connection logic, or base-path/proxy fixes. Reload the SillyTavern tab to pick those up. You also do not need to reinstall when only the **install script** (`install.js`) changes; that only affects the next run of the installer.
+
+When in doubt, re-running the installer and restarting ST is safe and only takes a moment.
+
+---
+
 ## Docker / custom install paths
 
 If you see **"Cannot find module '.../redraft/server-plugin/install.js'"**, the ReDraft extension is not at the default path inside your container (e.g. `data/default-user/extensions/third-party/redraft/` may not exist or may be elsewhere).
@@ -110,12 +120,15 @@ If you see **"Cannot find module '.../redraft/server-plugin/install.js'"**, the 
    ```
 3. If the ReDraft extension is only in your project and not inside ST's `data/.../extensions/`, you still only need to run the script from the folder that contains `server-plugin/`; the installer copies the plugin into `plugins/redraft` at the ST root.
 
+**Docker:** The plugin must run in the **same** container that serves the SillyTavern UI. Run the installer inside that container (e.g. `docker exec -it <container> sh` then `node server-plugin/install.js` from the ReDraft folder). Ensure `plugins/redraft/` exists in the container and that `config.yaml` has `enableServerPlugins: true`, then restart the container.
+
 ---
 
 ## Troubleshooting
 
 | Issue | What to do |
 |-------|------------|
+| **"Server returned a web page instead of JSON" (including on localhost)** | The plugin is not installed or not loaded. Run the installer from the ReDraft extension folder (see [Step 1](#step-1-run-the-installer)), ensure `plugins/redraft/index.js` exists in your SillyTavern folder, set `enableServerPlugins: true` in `config.yaml`, then **restart SillyTavern**. Open the URL from the error in a new tab to confirm you get a 404 or HTML page. |
 | **"Cannot find module '.../install.js'"** | The extension isn't at that path. Use Option B: `cd` to the folder that contains `server-plugin/` and run `node server-plugin/install.js` (set `ST_ROOT` if needed). See [Docker / custom install paths](#docker--custom-install-paths) above. |
 | **"Could not locate SillyTavern root"** | Run the script from the ST root, or from inside the ReDraft extension folder so it can find `server.js` above. Or set `ST_ROOT` to your SillyTavern root. |
 | **“Plugin unavailable” / Test fails** | Restart SillyTavern after installing. Ensure server plugins are enabled (installer sets `enableServerPlugins: true` in `config.yaml`). |
