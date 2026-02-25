@@ -84,16 +84,23 @@ async function init(router) {
             if (!apiUrl || typeof apiUrl !== 'string' || !apiUrl.trim()) {
                 return res.status(400).json({ error: 'apiUrl is required and must be a non-empty string' });
             }
-            if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
-                return res.status(400).json({ error: 'apiKey is required and must be a non-empty string' });
-            }
             if (!model || typeof model !== 'string' || !model.trim()) {
                 return res.status(400).json({ error: 'model is required and must be a non-empty string' });
             }
 
+            // If no new key was sent, reuse the saved one (allows changing model without re-entering key)
+            const existingConfig = readConfig();
+            const resolvedKey = (apiKey && typeof apiKey === 'string' && apiKey.trim())
+                ? apiKey.trim()
+                : existingConfig?.apiKey;
+
+            if (!resolvedKey) {
+                return res.status(400).json({ error: 'apiKey is required (no saved key found)' });
+            }
+
             const config = {
                 apiUrl: apiUrl.trim().replace(/\/+$/, ''),
-                apiKey: apiKey.trim(),
+                apiKey: resolvedKey,
                 model: model.trim(),
                 maxTokens: Number(maxTokens) || 4096,
             };
@@ -129,6 +136,54 @@ async function init(router) {
             model: config.model || null,
             maskedKey: maskKey(config.apiKey),
         });
+    });
+
+    /**
+     * GET /models — Fetch available models from the configured API.
+     * Returns: { models: [{ id, name? }] }
+     */
+    router.get('/models', async (req, res) => {
+        try {
+            const config = readConfig();
+            if (!config || !config.apiKey || !config.apiUrl) {
+                return res.status(503).json({ error: 'Not configured. Save API credentials first.' });
+            }
+
+            const endpoint = `${config.apiUrl}/models`;
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
+
+            const response = await fetch(endpoint, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${config.apiKey}`,
+                },
+                signal: controller.signal,
+            });
+
+            clearTimeout(timeout);
+
+            if (!response.ok) {
+                const body = await response.text();
+                const sanitized = sanitizeError(body);
+                return res.status(502).json({ error: `API returned ${response.status}: ${sanitized.slice(0, 200)}` });
+            }
+
+            const data = await response.json();
+
+            // OpenAI-compatible format: { data: [{ id: "model-name", ... }] }
+            const models = Array.isArray(data?.data)
+                ? data.data.map(m => ({ id: m.id, name: m.name || m.id })).sort((a, b) => a.id.localeCompare(b.id))
+                : [];
+
+            return res.json({ models });
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                return res.status(504).json({ error: 'Models request timed out' });
+            }
+            console.error(`[${MODULE_NAME}] Models fetch error:`, sanitizeError(err.message));
+            return res.status(500).json({ error: 'Failed to fetch models' });
+        }
     });
 
     /**

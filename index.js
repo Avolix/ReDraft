@@ -426,6 +426,7 @@ async function checkPluginStatus() {
         updateConnectionInfo(status);
         updatePluginBanner();
         updateConnectionModeUI();
+        populatePluginFields(status);
         return status;
     } catch {
         pluginAvailable = false;
@@ -434,6 +435,29 @@ async function checkPluginStatus() {
         updatePluginBanner();
         updateConnectionModeUI();
         return null;
+    }
+}
+
+/**
+ * Populate the connection fields from saved plugin config (URL, model, masked key).
+ * The API key field shows a placeholder when a key is already saved so the user
+ * doesn't have to re-enter it just to change the model.
+ */
+function populatePluginFields(status) {
+    if (!status?.configured) return;
+
+    const urlField = document.getElementById('redraft_api_url');
+    const modelField = document.getElementById('redraft_model');
+    const keyField = document.getElementById('redraft_api_key');
+
+    if (urlField && status.apiUrl && !urlField.value) {
+        urlField.value = status.apiUrl;
+    }
+    if (modelField && status.model && !modelField.value) {
+        modelField.value = status.model;
+    }
+    if (keyField && status.maskedKey && !keyField.value) {
+        keyField.placeholder = `Saved (${status.maskedKey}) — leave blank to keep`;
     }
 }
 
@@ -1460,6 +1484,12 @@ function bindSettingsUI() {
         testConnBtn.addEventListener('click', testConnection);
     }
 
+    // Fetch models button
+    const fetchModelsBtn = document.getElementById('redraft_fetch_models');
+    if (fetchModelsBtn) {
+        fetchModelsBtn.addEventListener('click', fetchModels);
+    }
+
     // Import custom rules button
     const importBtn = document.getElementById('redraft_import_rules');
     const importFile = document.getElementById('redraft_import_rules_file');
@@ -1607,18 +1637,24 @@ async function saveConnection() {
     const model = document.getElementById('redraft_model')?.value?.trim();
     const maxTokens = document.getElementById('redraft_max_tokens')?.value;
 
-    if (!apiUrl || !apiKey || !model) {
-        toastr.warning('Please fill in API URL, Key, and Model', 'ReDraft');
+    if (!apiUrl || !model) {
+        toastr.warning('Please fill in API URL and Model', 'ReDraft');
         return;
     }
 
+    const payload = {
+        apiUrl,
+        model,
+        maxTokens: maxTokens ? parseInt(maxTokens, 10) : 4096,
+    };
+
+    // Only send apiKey if the user entered a new one; otherwise the server keeps the saved key
+    if (apiKey) {
+        payload.apiKey = apiKey;
+    }
+
     try {
-        await pluginRequest('/config', 'POST', {
-            apiUrl,
-            apiKey,
-            model,
-            maxTokens: maxTokens ? parseInt(maxTokens, 10) : 4096,
-        });
+        await pluginRequest('/config', 'POST', payload);
 
         const keyField = document.getElementById('redraft_api_key');
         if (keyField) keyField.value = '';
@@ -1655,6 +1691,35 @@ async function testConnection() {
             'ReDraft',
             { timeOut: 8000 }
         );
+    }
+}
+
+/**
+ * Fetch available models from the configured API and populate the model datalist.
+ */
+async function fetchModels() {
+    try {
+        const data = await pluginRequest('/models');
+        const models = data?.models;
+        if (!Array.isArray(models) || models.length === 0) {
+            toastr.info('No models returned by the API', 'ReDraft');
+            return;
+        }
+
+        const datalist = document.getElementById('redraft_model_list');
+        if (datalist) {
+            datalist.innerHTML = '';
+            for (const m of models) {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                if (m.name && m.name !== m.id) opt.label = m.name;
+                datalist.appendChild(opt);
+            }
+        }
+
+        toastr.success(`${models.length} model(s) loaded — click the Model field to browse`, 'ReDraft');
+    } catch (err) {
+        toastr.error(err?.message || 'Failed to fetch models', 'ReDraft');
     }
 }
 
@@ -1841,7 +1906,8 @@ function registerSlashCommand() {
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_model">Model</label>
-                            <input id="redraft_model" type="text" class="text_pole" placeholder="gpt-4o-mini" title="e.g. gpt-4o-mini, claude-3-haiku" />
+                            <input id="redraft_model" type="text" class="text_pole" placeholder="gpt-4o-mini" title="e.g. gpt-4o-mini, claude-3-haiku" list="redraft_model_list" autocomplete="off" />
+                            <datalist id="redraft_model_list"></datalist>
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_max_tokens">Max Tokens</label>
@@ -1851,11 +1917,15 @@ function registerSlashCommand() {
                         <div class="redraft-button-row">
                             <div id="redraft_save_connection" class="menu_button" title="Save credentials to the server plugin (stored on disk, not in browser)">
                                 <i class="fa-solid fa-save"></i>
-                                <span>Save Connection</span>
+                                <span>Save</span>
                             </div>
                             <div id="redraft_test_connection" class="menu_button" title="Verify plugin is reachable and configured">
                                 <i class="fa-solid fa-circle-check"></i>
-                                <span>Test Connection</span>
+                                <span>Test</span>
+                            </div>
+                            <div id="redraft_fetch_models" class="menu_button" title="Fetch available models from the API">
+                                <i class="fa-solid fa-list"></i>
+                                <span>Models</span>
                             </div>
                             <span id="redraft_connection_info" class="redraft-connection-info"></span>
                         </div>

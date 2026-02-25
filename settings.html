@@ -71,7 +71,8 @@
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_model">Model</label>
-                            <input id="redraft_model" type="text" class="text_pole" placeholder="gpt-4o-mini" title="e.g. gpt-4o-mini, claude-3-haiku" />
+                            <input id="redraft_model" type="text" class="text_pole" placeholder="gpt-4o-mini" title="e.g. gpt-4o-mini, claude-3-haiku" list="redraft_model_list" autocomplete="off" />
+                            <datalist id="redraft_model_list"></datalist>
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_max_tokens">Max Tokens</label>
@@ -81,11 +82,15 @@
                         <div class="redraft-button-row">
                             <div id="redraft_save_connection" class="menu_button" title="Save credentials to the server plugin (stored on disk, not in browser)">
                                 <i class="fa-solid fa-save"></i>
-                                <span>Save Connection</span>
+                                <span>Save</span>
                             </div>
                             <div id="redraft_test_connection" class="menu_button" title="Verify plugin is reachable and configured">
                                 <i class="fa-solid fa-circle-check"></i>
-                                <span>Test Connection</span>
+                                <span>Test</span>
+                            </div>
+                            <div id="redraft_fetch_models" class="menu_button" title="Fetch available models from the API">
+                                <i class="fa-solid fa-list"></i>
+                                <span>Models</span>
                             </div>
                             <span id="redraft_connection_info" class="redraft-connection-info"></span>
                         </div>

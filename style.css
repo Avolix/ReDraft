@@ -160,13 +160,23 @@
 .redraft-button-row {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 6px;
     margin-bottom: 5px;
+    flex-wrap: wrap;
+}
+
+.redraft-button-row .menu_button {
+    padding: 5px 10px;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    gap: 5px;
+    white-space: nowrap;
 }
 
 .redraft-connection-info {
     font-size: calc(var(--mainFontSize) * 0.85);
     opacity: 0.6;
+    flex-basis: 100%;
+    margin-top: 2px;
 }
 
 .redraft-section-hint {
