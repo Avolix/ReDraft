@@ -46,6 +46,56 @@ function maskKey(key) {
 }
 
 /**
+ * Validate that a URL is a safe external API endpoint (not an internal/private address).
+ * Prevents SSRF by blocking file://, private IPs, localhost, and link-local addresses.
+ * @param {string} urlString
+ * @returns {{ valid: boolean, error?: string }}
+ */
+function validateApiUrl(urlString) {
+    let parsed;
+    try {
+        parsed = new URL(urlString);
+    } catch {
+        return { valid: false, error: 'Invalid URL format' };
+    }
+
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        return { valid: false, error: `Unsupported protocol "${parsed.protocol}" — only http: and https: are allowed` };
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+
+    if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+        return { valid: false, error: 'localhost URLs are not allowed — use an external API endpoint' };
+    }
+
+    // Block private/reserved IPv4 and IPv6 ranges
+    const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ipv4Match) {
+        const [, a, b, c] = ipv4Match.map(Number);
+        const blocked =
+            a === 127 ||                              // 127.0.0.0/8 loopback
+            a === 10 ||                               // 10.0.0.0/8 private
+            (a === 172 && b >= 16 && b <= 31) ||      // 172.16.0.0/12 private
+            (a === 192 && b === 168) ||                // 192.168.0.0/16 private
+            (a === 169 && b === 254) ||                // 169.254.0.0/16 link-local
+            a === 0;                                   // 0.0.0.0/8
+
+        if (blocked) {
+            return { valid: false, error: `Private/internal IP addresses are not allowed (${hostname})` };
+        }
+    }
+
+    if (hostname === '::1' || hostname === '[::1]' ||
+        hostname.startsWith('fc') || hostname.startsWith('fd') ||
+        hostname.startsWith('fe80')) {
+        return { valid: false, error: `Private/internal IPv6 addresses are not allowed (${hostname})` };
+    }
+
+    return { valid: true };
+}
+
+/**
  * Sanitize error messages to strip any credential fragments.
  * @param {string} message
  * @returns {string}
@@ -84,6 +134,12 @@ async function init(router) {
             if (!apiUrl || typeof apiUrl !== 'string' || !apiUrl.trim()) {
                 return res.status(400).json({ error: 'apiUrl is required and must be a non-empty string' });
             }
+
+            const urlCheck = validateApiUrl(apiUrl.trim());
+            if (!urlCheck.valid) {
+                return res.status(400).json({ error: `Invalid API URL: ${urlCheck.error}` });
+            }
+
             if (!model || typeof model !== 'string' || !model.trim()) {
                 return res.status(400).json({ error: 'model is required and must be a non-empty string' });
             }
@@ -102,10 +158,10 @@ async function init(router) {
                 apiUrl: apiUrl.trim().replace(/\/+$/, ''),
                 apiKey: resolvedKey,
                 model: model.trim(),
-                maxTokens: Number(maxTokens) || 4096,
+                maxTokens: Math.min(Math.max(Number(maxTokens) || 4096, 1), 128000),
             };
 
-            fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+            fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
             cachedConfig = config;
 
             console.log(`[${MODULE_NAME}] Config saved successfully`);
