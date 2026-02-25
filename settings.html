@@ -32,8 +32,29 @@
                         <label for="redraft_connection_mode">Refinement Mode</label>
                         <select id="redraft_connection_mode">
                             <option value="st">Use current ST connection</option>
-                            <option value="plugin" disabled>Separate LLM (Coming Soon)</option>
+                            <option value="plugin">Separate LLM (server plugin)</option>
                         </select>
+                    </div>
+                    <p id="redraft_connection_mode_hint" class="redraft-connection-hint" style="display: none;">
+                        Use a different API/model for refinement (e.g. a faster or cheaper model). One-time plugin install required — see install instructions below.
+                    </p>
+
+                    <!-- Banner: ST mode, plugin not installed (nudge) -->
+                    <div id="redraft_plugin_banner" class="redraft-plugin-banner" style="display: none;">
+                        <div class="redraft-banner-text">
+                            <i class="fa-solid fa-info-circle"></i>
+                            <span>Want a different model just for refinement? Install the ReDraft server plugin once — no extra server to run.</span>
+                        </div>
+                        <a id="redraft_plugin_install_link" href="#" class="menu_button" target="_blank" rel="noopener noreferrer">View install instructions</a>
+                    </div>
+
+                    <!-- Plugin mode: not installed / not restarted -->
+                    <div id="redraft_plugin_unavailable_block" class="redraft-plugin-unavailable" style="display: none;">
+                        <div class="redraft-unavailable-text">
+                            <i class="fa-solid fa-plug-circle-xmark"></i>
+                            <span>Plugin not detected. Install it once, then restart SillyTavern. Credentials are saved in the plugin (not in the browser).</span>
+                        </div>
+                        <a id="redraft_plugin_unavailable_link" href="#" class="menu_button" target="_blank" rel="noopener noreferrer">Install server plugin</a>
                     </div>
 
                     <!-- Plugin connection fields (shown only in plugin mode) -->
@@ -41,7 +62,7 @@
                         <div class="redraft-form-group">
                             <label for="redraft_api_url">API URL</label>
                             <input id="redraft_api_url" type="text" class="text_pole"
-                                placeholder="https://api.openai.com/v1" />
+                                placeholder="https://api.openai.com/v1" title="OpenAI-compatible endpoint (no trailing slash)" />
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_api_key">API Key</label>
@@ -50,7 +71,7 @@
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_model">Model</label>
-                            <input id="redraft_model" type="text" class="text_pole" placeholder="gpt-4o-mini" />
+                            <input id="redraft_model" type="text" class="text_pole" placeholder="gpt-4o-mini" title="e.g. gpt-4o-mini, claude-3-haiku" />
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_max_tokens">Max Tokens</label>
@@ -58,9 +79,13 @@
                                 max="128000" />
                         </div>
                         <div class="redraft-button-row">
-                            <div id="redraft_save_connection" class="menu_button">
+                            <div id="redraft_save_connection" class="menu_button" title="Save credentials to the server plugin (stored on disk, not in browser)">
                                 <i class="fa-solid fa-save"></i>
                                 <span>Save Connection</span>
+                            </div>
+                            <div id="redraft_test_connection" class="menu_button" title="Verify plugin is reachable and configured">
+                                <i class="fa-solid fa-circle-check"></i>
+                                <span>Test Connection</span>
                             </div>
                             <span id="redraft_connection_info" class="redraft-connection-info"></span>
                         </div>

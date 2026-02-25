@@ -383,12 +383,14 @@ async function checkPluginStatus() {
         updateStatusDot(status.configured);
         updateConnectionInfo(status);
         updatePluginBanner();
+        updateConnectionModeUI();
         return status;
     } catch {
         pluginAvailable = false;
         updateStatusDot(false, true);
         updateConnectionInfo(null);
         updatePluginBanner();
+        updateConnectionModeUI();
         return null;
     }
 }
@@ -419,10 +421,13 @@ function updateConnectionInfo(status) {
     if (!info) return;
     if (!pluginAvailable) {
         info.textContent = 'Plugin unavailable';
+        info.title = 'Install the server plugin and restart SillyTavern';
     } else if (status?.configured) {
-        info.textContent = `${status.model} (${status.maskedKey})`;
+        info.textContent = `\u2713 ${status.model} (${status.maskedKey})`;
+        info.title = 'Connection ready for refinement';
     } else {
-        info.textContent = 'Not configured';
+        info.textContent = 'Not configured \u2014 save credentials above';
+        info.title = 'Enter API URL, Key, and Model, then click Save Connection';
     }
 }
 
@@ -439,19 +444,34 @@ function updatePluginBanner() {
     }
 }
 
+const INSTALL_DOC_URL = 'https://github.com/MeowCatboyMeow/ReDraft/blob/main/INSTALL_PLUGIN.md';
+
 function updateConnectionModeUI() {
     const settings = getSettings();
     const pluginFields = document.getElementById('redraft_plugin_fields');
     const stModeInfo = document.getElementById('redraft_st_mode_info');
+    const modeHint = document.getElementById('redraft_connection_mode_hint');
+    const pluginUnavailableBlock = document.getElementById('redraft_plugin_unavailable_block');
+
+    const isPluginMode = settings.connectionMode === 'plugin';
 
     if (pluginFields) {
-        pluginFields.style.display = settings.connectionMode === 'plugin' ? '' : 'none';
+        pluginFields.style.display = isPluginMode ? '' : 'none';
     }
     if (stModeInfo) {
         stModeInfo.style.display = settings.connectionMode === 'st' ? '' : 'none';
     }
+    if (modeHint) {
+        modeHint.style.display = isPluginMode ? '' : 'none';
+    }
+    if (pluginUnavailableBlock) {
+        pluginUnavailableBlock.style.display = isPluginMode && !pluginAvailable ? '' : 'none';
+    }
 
-    updateStatusDot(null);
+    // Status dot is updated by checkPluginStatus; only update for ST mode when switching
+    if (settings.connectionMode === 'st') {
+        updateStatusDot(true);
+    }
     updatePluginBanner();
 }
 
@@ -521,7 +541,11 @@ async function redraftMessage(messageIndex) {
 
     // Check if plugin mode is selected but plugin is unavailable
     if (settings.connectionMode === 'plugin' && !pluginAvailable) {
-        toastr.error('Server plugin is not available. Switch to ST mode or install the plugin.', 'ReDraft');
+        toastr.error(
+            'ReDraft server plugin is not available. Install it once (see Install server plugin in ReDraft settings), then restart SillyTavern.',
+            'ReDraft',
+            { timeOut: 8000 }
+        );
         return;
     }
 
@@ -654,7 +678,18 @@ Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
 
     } catch (err) {
         console.error(`${LOG_PREFIX} Refinement failed:`, err.message);
-        toastr.error(err.message || 'Refinement failed', 'ReDraft');
+        const msg = err.message || '';
+        if (msg.includes('not configured') || msg.includes('503')) {
+            toastr.error(
+                'ReDraft plugin isn\'t configured. In ReDraft settings, enter API URL, Key, and Model under Separate LLM, then click Save Connection.',
+                'ReDraft',
+                { timeOut: 8000 }
+            );
+        } else if (msg.includes('timed out') || msg.includes('504')) {
+            toastr.error('Refinement timed out. Try a shorter message or check your API/model.', 'ReDraft');
+        } else {
+            toastr.error(msg || 'Refinement failed', 'ReDraft');
+        }
     } finally {
         isRefining = false;
         setMessageButtonLoading(messageIndex, false);
@@ -1365,10 +1400,22 @@ function bindSettingsUI() {
         }
     }
 
+    // Install doc links (open in new tab)
+    const installLink = document.getElementById('redraft_plugin_install_link');
+    if (installLink) installLink.href = INSTALL_DOC_URL;
+    const unavailLink = document.getElementById('redraft_plugin_unavailable_link');
+    if (unavailLink) unavailLink.href = INSTALL_DOC_URL;
+
     // Save connection button
     const saveConnBtn = document.getElementById('redraft_save_connection');
     if (saveConnBtn) {
         saveConnBtn.addEventListener('click', saveConnection);
+    }
+
+    // Test connection button
+    const testConnBtn = document.getElementById('redraft_test_connection');
+    if (testConnBtn) {
+        testConnBtn.addEventListener('click', testConnection);
     }
 
     // Import custom rules button
@@ -1536,8 +1583,36 @@ async function saveConnection() {
 
         toastr.success('Connection saved', 'ReDraft');
         await checkPluginStatus();
+        updateConnectionModeUI();
+        updatePopoutStatus();
     } catch (err) {
         toastr.error(err.message || 'Failed to save connection', 'ReDraft');
+    }
+}
+
+/**
+ * Test plugin reachability and configuration. User-facing feedback via toasts.
+ */
+async function testConnection() {
+    try {
+        const status = await pluginRequest('/status');
+        if (!status.configured) {
+            toastr.warning(
+                'Plugin is reachable but not configured. Enter API URL, Key, and Model, then click Save Connection.',
+                'ReDraft',
+                { timeOut: 6000 }
+            );
+            return;
+        }
+        toastr.success(`Connection OK — ${status.model} ready for refinement`, 'ReDraft');
+        await checkPluginStatus();
+        updateConnectionModeUI();
+    } catch (err) {
+        toastr.error(
+            'Plugin unreachable. Install the ReDraft server plugin and restart SillyTavern. See install instructions in the README.',
+            'ReDraft',
+            { timeOut: 8000 }
+        );
     }
 }
 
@@ -1685,8 +1760,29 @@ function registerSlashCommand() {
                         <label for="redraft_connection_mode">Refinement Mode</label>
                         <select id="redraft_connection_mode">
                             <option value="st">Use current ST connection</option>
-                            <option value="plugin" disabled>Separate LLM (Coming Soon)</option>
+                            <option value="plugin">Separate LLM (server plugin)</option>
                         </select>
+                    </div>
+                    <p id="redraft_connection_mode_hint" class="redraft-connection-hint" style="display: none;">
+                        Use a different API/model for refinement (e.g. a faster or cheaper model). One-time plugin install required — see install instructions below.
+                    </p>
+
+                    <!-- Banner: ST mode, plugin not installed (nudge) -->
+                    <div id="redraft_plugin_banner" class="redraft-plugin-banner" style="display: none;">
+                        <div class="redraft-banner-text">
+                            <i class="fa-solid fa-info-circle"></i>
+                            <span>Want a different model just for refinement? Install the ReDraft server plugin once — no extra server to run.</span>
+                        </div>
+                        <a id="redraft_plugin_install_link" href="#" class="menu_button" target="_blank" rel="noopener noreferrer">View install instructions</a>
+                    </div>
+
+                    <!-- Plugin mode: not installed / not restarted -->
+                    <div id="redraft_plugin_unavailable_block" class="redraft-plugin-unavailable" style="display: none;">
+                        <div class="redraft-unavailable-text">
+                            <i class="fa-solid fa-plug-circle-xmark"></i>
+                            <span>Plugin not detected. Install it once, then restart SillyTavern. Credentials are saved in the plugin (not in the browser).</span>
+                        </div>
+                        <a id="redraft_plugin_unavailable_link" href="#" class="menu_button" target="_blank" rel="noopener noreferrer">Install server plugin</a>
                     </div>
 
                     <!-- Plugin connection fields (shown only in plugin mode) -->
@@ -1694,7 +1790,7 @@ function registerSlashCommand() {
                         <div class="redraft-form-group">
                             <label for="redraft_api_url">API URL</label>
                             <input id="redraft_api_url" type="text" class="text_pole"
-                                placeholder="https://api.openai.com/v1" />
+                                placeholder="https://api.openai.com/v1" title="OpenAI-compatible endpoint (no trailing slash)" />
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_api_key">API Key</label>
@@ -1703,7 +1799,7 @@ function registerSlashCommand() {
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_model">Model</label>
-                            <input id="redraft_model" type="text" class="text_pole" placeholder="gpt-4o-mini" />
+                            <input id="redraft_model" type="text" class="text_pole" placeholder="gpt-4o-mini" title="e.g. gpt-4o-mini, claude-3-haiku" />
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_max_tokens">Max Tokens</label>
@@ -1711,9 +1807,13 @@ function registerSlashCommand() {
                                 max="128000" />
                         </div>
                         <div class="redraft-button-row">
-                            <div id="redraft_save_connection" class="menu_button">
+                            <div id="redraft_save_connection" class="menu_button" title="Save credentials to the server plugin (stored on disk, not in browser)">
                                 <i class="fa-solid fa-save"></i>
                                 <span>Save Connection</span>
+                            </div>
+                            <div id="redraft_test_connection" class="menu_button" title="Verify plugin is reachable and configured">
+                                <i class="fa-solid fa-circle-check"></i>
+                                <span>Test Connection</span>
                             </div>
                             <span id="redraft_connection_info" class="redraft-connection-info"></span>
                         </div>

@@ -6,11 +6,15 @@
  * Copies the server plugin files to SillyTavern's plugins directory
  * and enables server plugins in config.yaml if needed.
  *
- * Usage: Run from your SillyTavern root directory:
- *   node data/<user>/extensions/third-party/redraft/server-plugin/install.js
- *
- * Or if developing locally:
- *   node public/scripts/extensions/third-party/redraft/server-plugin/install.js
+ * Usage:
+ *   From SillyTavern root:
+ *     node data/default-user/extensions/third-party/redraft/server-plugin/install.js
+ *   From ReDraft extension folder (script finds ST root by walking up):
+ *     node server-plugin/install.js
+ *   With explicit root (optional):
+ *     set ST_ROOT=C:\Path\To\SillyTavern  (Windows)
+ *     export ST_ROOT=/path/to/SillyTavern (Linux/macOS)
+ *     node server-plugin/install.js
  */
 
 const fs = require('fs');
@@ -18,23 +22,29 @@ const path = require('path');
 
 const PLUGIN_NAME = 'redraft';
 
-// Determine paths
-const scriptDir = __dirname;
-const stRoot = findSTRoot(scriptDir);
+// 1. Explicit env 2. Walk up from script 3. Walk up from cwd
+const stRoot = process.env.ST_ROOT
+    ? path.resolve(process.env.ST_ROOT)
+    : findSTRoot(__dirname) || findSTRoot(process.cwd());
 
 if (!stRoot) {
     console.error('ERROR: Could not locate SillyTavern root directory.');
-    console.error('Make sure you run this script from within a SillyTavern installation.');
+    console.error('');
+    console.error('Run this script either:');
+    console.error('  - From your SillyTavern root: node data/default-user/extensions/third-party/redraft/server-plugin/install.js');
+    console.error('  - From the ReDraft extension folder: node server-plugin/install.js');
+    console.error('  - Or set ST_ROOT to your SillyTavern path and run from anywhere.');
     process.exit(1);
 }
 
 const pluginsDir = path.join(stRoot, 'plugins');
 const targetDir = path.join(pluginsDir, PLUGIN_NAME);
 
-console.log(`ReDraft Server Plugin Installer`);
-console.log(`================================`);
-console.log(`SillyTavern root: ${stRoot}`);
-console.log(`Target: ${targetDir}`);
+console.log('');
+console.log('ReDraft Server Plugin Installer');
+console.log('==============================');
+console.log('SillyTavern root: ' + stRoot);
+console.log('Target:           ' + targetDir);
 console.log('');
 
 // Create plugins directory if it doesn't exist
@@ -96,9 +106,19 @@ if (fs.existsSync(configPath)) {
     }
 }
 
-console.log('\n================================');
-console.log('Installation complete! Restart SillyTavern to activate the server plugin.');
-console.log('Then configure your API credentials in the ReDraft extension settings.');
+console.log('');
+console.log('==============================');
+console.log('Installation complete.');
+console.log('');
+console.log('Next steps:');
+console.log('  1. Restart SillyTavern so the plugin loads.');
+console.log('  2. In SillyTavern: Extensions → ReDraft → Connection.');
+console.log('  3. Choose "Separate LLM (server plugin)".');
+console.log('  4. Enter API URL, Key, and Model, then click Save Connection.');
+console.log('  5. Click Test Connection to verify.');
+console.log('');
+console.log('See INSTALL_PLUGIN.md in the ReDraft folder for full instructions.');
+console.log('');
 
 /**
  * Walk up from the script location to find the ST root

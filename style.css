@@ -232,6 +232,43 @@
     font-size: calc(var(--mainFontSize) * 0.85);
 }
 
+/* Connection mode hint (Separate LLM) */
+.redraft-connection-hint {
+    margin: 4px 0 8px 0;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    opacity: 0.85;
+}
+
+/* Plugin unavailable (plugin mode selected but plugin not detected) */
+.redraft-plugin-unavailable {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    margin: 8px 0;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    background: var(--black30a);
+}
+
+.redraft-unavailable-text {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    opacity: 0.9;
+}
+
+.redraft-unavailable-text i {
+    margin-top: 2px;
+    flex-shrink: 0;
+    color: var(--fullred);
+}
+
+.redraft-plugin-unavailable .menu_button {
+    align-self: flex-start;
+}
+
 /* Install dialog */
 .redraft-install-dialog {
     position: fixed;
