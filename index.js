@@ -8,8 +8,21 @@
  */
 
 const MODULE_NAME = 'redraft';
-const PLUGIN_BASE = '/api/plugins/redraft';
 const LOG_PREFIX = '[ReDraft]';
+
+/**
+ * Base URL path for the ReDraft server plugin API. Works at root (/) and when ST
+ * is behind a reverse proxy at a subpath (e.g. /tavern, /st). Uses the first path
+ * segment as the app base when present so /tavern/... and /tavern/chat/... both
+ * hit /tavern/api/plugins/redraft.
+ */
+function getPluginBaseUrl() {
+    if (typeof window === 'undefined' || !window.location) return '/api/plugins/redraft';
+    const pathname = (window.location.pathname || '/').replace(/\/$/, '') || '/';
+    const segments = pathname.split('/').filter(Boolean);
+    const basePath = segments.length > 0 ? '/' + segments[0] : '';
+    return basePath + '/api/plugins/redraft';
+}
 
 
 // ─── Default Settings ───────────────────────────────────────────────
@@ -367,7 +380,8 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
     if (body) {
         options.body = JSON.stringify(body);
     }
-    const response = await fetch(`${PLUGIN_BASE}${endpoint}`, options);
+    const base = getPluginBaseUrl();
+    const response = await fetch(`${base}${endpoint}`, options);
     const text = await response.text();
 
     let data;
