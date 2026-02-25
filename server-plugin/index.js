@@ -2,9 +2,14 @@
  * ReDraft server plugin — runs inside SillyTavern and proxies refine requests to a separate LLM.
  * Changes to this file require users to re-run server-plugin/install.js and restart ST.
  * Note "Server plugin update required" in release notes / INSTALL_PLUGIN.md when releasing such changes.
+ *
+ * ESM module — SillyTavern's package.json has "type": "module", so .js files must use import/export.
  */
-const path = require('path');
-const fs = require('fs');
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const MODULE_NAME = 'redraft';
@@ -59,10 +64,8 @@ function sanitizeError(message) {
  * @param {import('express').Router} router
  */
 async function init(router) {
-    // Load config on startup
     readConfig();
 
-    // Watch config file for changes
     const configDir = path.dirname(CONFIG_PATH);
     fs.watch(configDir, (eventType, filename) => {
         if (filename === 'config.json') {
@@ -79,7 +82,6 @@ async function init(router) {
         try {
             const { apiUrl, apiKey, model, maxTokens } = req.body;
 
-            // Validate required fields
             if (!apiUrl || typeof apiUrl !== 'string' || !apiUrl.trim()) {
                 return res.status(400).json({ error: 'apiUrl is required and must be a non-empty string' });
             }
@@ -91,7 +93,7 @@ async function init(router) {
             }
 
             const config = {
-                apiUrl: apiUrl.trim().replace(/\/+$/, ''), // Strip trailing slashes
+                apiUrl: apiUrl.trim().replace(/\/+$/, ''),
                 apiKey: apiKey.trim(),
                 model: model.trim(),
                 maxTokens: Number(maxTokens) || 4096,
@@ -137,13 +139,11 @@ async function init(router) {
      */
     router.post('/refine', async (req, res) => {
         try {
-            // Check body size
             const bodySize = JSON.stringify(req.body).length;
             if (bodySize > MAX_BODY_SIZE_BYTES) {
                 return res.status(413).json({ error: 'Request body too large' });
             }
 
-            // Validate messages
             const { messages } = req.body;
             if (!Array.isArray(messages) || messages.length === 0) {
                 return res.status(400).json({ error: 'messages must be a non-empty array' });
@@ -158,19 +158,17 @@ async function init(router) {
                 }
             }
 
-            // Read config
             const config = readConfig();
             if (!config || !config.apiKey || !config.apiUrl) {
                 return res.status(503).json({ error: 'ReDraft is not configured. Please set up API credentials.' });
             }
 
-            // Build request to LLM
             const endpoint = `${config.apiUrl}/chat/completions`;
             const payload = {
                 model: config.model,
                 messages: messages,
                 max_tokens: config.maxTokens || 4096,
-                temperature: 0.3, // Low temp for consistent refinement
+                temperature: 0.3,
             };
 
             const controller = new AbortController();
@@ -233,12 +231,10 @@ async function exit() {
     console.log(`[${MODULE_NAME}] Plugin unloaded.`);
 }
 
-module.exports = {
-    init,
-    exit,
-    info: {
-        id: 'redraft',
-        name: 'ReDraft',
-        description: 'Server-side proxy for ReDraft message refinement. Securely stores API credentials and proxies refinement requests to a separate LLM.',
-    },
+export { init, exit };
+
+export const info = {
+    id: 'redraft',
+    name: 'ReDraft',
+    description: 'Server-side proxy for ReDraft message refinement. Securely stores API credentials and proxies refinement requests to a separate LLM.',
 };

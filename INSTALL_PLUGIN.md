@@ -124,11 +124,42 @@ If you see **"Cannot find module '.../redraft/server-plugin/install.js'"**, the 
 
 ---
 
+## Reverse proxy (nginx, Caddy, etc.)
+
+If you access SillyTavern through a reverse proxy (e.g. you open `http://localhost:8000` and the proxy forwards to the Node app on another port), the proxy **must forward `/api/`** to the SillyTavern backend. Otherwise requests like `/api/plugins/redraft/status` never reach Node and you get "Not found" or an HTML error page.
+
+**Example (nginx):** Forward all API requests to the backend (replace `BACKEND` with your ST backend address, e.g. `127.0.0.1:3000` or `localhost:3000`):
+
+```nginx
+location /api/ {
+    proxy_pass http://BACKEND/api/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+**Caddy (e.g. dockerized alongside ST):** Proxy the **entire** site to the SillyTavern container so `/api/` is included. Use the ST service name as upstream (Docker resolves it on the same network). Example Caddyfile:
+
+```caddyfile
+:8000 {
+    reverse_proxy sillytavern:3000
+}
+```
+
+Replace `sillytavern` with your SillyTavern service/container name and `3000` with the port ST listens on inside the container. If you use a block like `handle /api/* { ... }` that sends only some paths elsewhere, either remove it for `/api/` or add a `handle /api/plugins/* { reverse_proxy sillytavern:3000 }` so plugin routes reach ST. Reload Caddy: `caddy reload --config /etc/caddy/Caddyfile` or restart the Caddy container.
+
+After changing the proxy config, reload the proxy. Then open `http://your-proxy-url/api/plugins/redraft/status` in a browser — you should see JSON like `{"configured":false,...}`, not "Not found".
+
+---
+
 ## Troubleshooting
 
 | Issue | What to do |
 |-------|------------|
-| **"Server returned a web page instead of JSON" (including on localhost)** | The plugin is not installed or not loaded. Run the installer from the ReDraft extension folder (see [Step 1](#step-1-run-the-installer)), ensure `plugins/redraft/index.js` exists in your SillyTavern folder, set `enableServerPlugins: true` in `config.yaml`, then **restart SillyTavern**. Open the URL from the error in a new tab to confirm you get a 404 or HTML page. |
+| **"Server returned a web page instead of JSON" (including on localhost)** | Either the plugin isn't loaded (run installer, restart ST) or you're behind a reverse proxy that doesn't forward `/api/`. If the URL in the error opens to "Not found" / "The requested URL was not found on this server", the proxy is not forwarding `/api/` to SillyTavern — see [Reverse proxy](#reverse-proxy-nginx-caddy-etc). |
 | **"Cannot find module '.../install.js'"** | The extension isn't at that path. Use Option B: `cd` to the folder that contains `server-plugin/` and run `node server-plugin/install.js` (set `ST_ROOT` if needed). See [Docker / custom install paths](#docker--custom-install-paths) above. |
 | **"Could not locate SillyTavern root"** | Run the script from the ST root, or from inside the ReDraft extension folder so it can find `server.js` above. Or set `ST_ROOT` to your SillyTavern root. |
 | **“Plugin unavailable” / Test fails** | Restart SillyTavern after installing. Ensure server plugins are enabled (installer sets `enableServerPlugins: true` in `config.yaml`). |
