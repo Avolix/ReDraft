@@ -80,6 +80,13 @@ for (const file of filesToCopy) {
     copied++;
 }
 
+// Write a package.json that forces CJS so index.js works even when ST's root has "type": "module"
+const pluginPkg = path.join(targetDir, 'package.json');
+const pluginPkgContent = JSON.stringify({ type: 'commonjs' }, null, 2) + '\n';
+fs.writeFileSync(pluginPkg, pluginPkgContent, 'utf-8');
+console.log('  Created: package.json (type: commonjs)');
+copied++;
+
 console.log(`\n${copied} file(s) installed to ${targetDir}`);
 
 // Check and update config.yaml

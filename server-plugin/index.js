@@ -3,13 +3,12 @@
  * Changes to this file require users to re-run server-plugin/install.js and restart ST.
  * Note "Server plugin update required" in release notes / INSTALL_PLUGIN.md when releasing such changes.
  *
- * ESM module — SillyTavern's package.json has "type": "module", so .js files must use import/export.
+ * This file is CommonJS. The installer creates a package.json with "type": "commonjs" in the
+ * plugins/redraft/ directory so Node treats this as CJS even when ST's root package.json has
+ * "type": "module".
  */
-import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const path = require('path');
+const fs = require('fs');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const MODULE_NAME = 'redraft';
@@ -231,10 +230,12 @@ async function exit() {
     console.log(`[${MODULE_NAME}] Plugin unloaded.`);
 }
 
-export { init, exit };
-
-export const info = {
-    id: 'redraft',
-    name: 'ReDraft',
-    description: 'Server-side proxy for ReDraft message refinement. Securely stores API credentials and proxies refinement requests to a separate LLM.',
+module.exports = {
+    init,
+    exit,
+    info: {
+        id: 'redraft',
+        name: 'ReDraft',
+        description: 'Server-side proxy for ReDraft message refinement. Securely stores API credentials and proxies refinement requests to a separate LLM.',
+    },
 };
