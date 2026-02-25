@@ -17,15 +17,19 @@
  *     node server-plugin/install.js
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PLUGIN_NAME = 'redraft';
+const scriptDir = __dirname;
 
 // 1. Explicit env 2. Walk up from script 3. Walk up from cwd
 const stRoot = process.env.ST_ROOT
     ? path.resolve(process.env.ST_ROOT)
-    : findSTRoot(__dirname) || findSTRoot(process.cwd());
+    : findSTRoot(scriptDir) || findSTRoot(process.cwd());
 
 if (!stRoot) {
     console.error('ERROR: Could not locate SillyTavern root directory.');

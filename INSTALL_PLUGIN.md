@@ -92,11 +92,32 @@ Credentials are saved on the server (in the plugin’s `config.json`), not in th
 
 ---
 
+## Docker / custom install paths
+
+If you see **"Cannot find module '.../redraft/server-plugin/install.js'"**, the ReDraft extension is not at the default path inside your container (e.g. `data/default-user/extensions/third-party/redraft/` may not exist or may be elsewhere).
+
+**Do this instead:**
+
+1. Run the installer **from the folder that actually contains the ReDraft extension** (where `server-plugin/install.js` exists), e.g. if ReDraft is at `/home/node/app/ReDraft`:
+   ```bash
+   cd /home/node/app/ReDraft
+   node server-plugin/install.js
+   ```
+2. The script will walk up to find the SillyTavern root (looks for `server.js` + `package.json`). If your app root is different, set it explicitly:
+   ```bash
+   export ST_ROOT=/home/node/app
+   node server-plugin/install.js
+   ```
+3. If the ReDraft extension is only in your project and not inside ST's `data/.../extensions/`, you still only need to run the script from the folder that contains `server-plugin/`; the installer copies the plugin into `plugins/redraft` at the ST root.
+
+---
+
 ## Troubleshooting
 
 | Issue | What to do |
 |-------|------------|
-| **“Could not locate SillyTavern root”** | Run the script from the ST root, or from inside the ReDraft extension folder so it can find `server.js` above. |
+| **"Cannot find module '.../install.js'"** | The extension isn't at that path. Use Option B: `cd` to the folder that contains `server-plugin/` and run `node server-plugin/install.js` (set `ST_ROOT` if needed). See [Docker / custom install paths](#docker--custom-install-paths) above. |
+| **"Could not locate SillyTavern root"** | Run the script from the ST root, or from inside the ReDraft extension folder so it can find `server.js` above. Or set `ST_ROOT` to your SillyTavern root. |
 | **“Plugin unavailable” / Test fails** | Restart SillyTavern after installing. Ensure server plugins are enabled (installer sets `enableServerPlugins: true` in `config.yaml`). |
 | **“Not configured” after save** | Click **Save Connection** again. Check that API URL has no trailing slash and that the key and model are correct. |
 | **503 when refining** | Plugin is reachable but credentials aren’t saved. Enter URL, Key, and Model in ReDraft settings and click **Save Connection**, then **Test Connection**. |
