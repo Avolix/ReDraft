@@ -19,29 +19,47 @@ Open a terminal and run the install script **from your SillyTavern root director
 
 ### Option A — From SillyTavern root (recommended)
 
+First `cd` to your SillyTavern folder, then run the installer.
+
+**Linux / macOS:**
+
 ```bash
 cd /path/to/your/SillyTavern
 node data/default-user/extensions/third-party/redraft/server-plugin/install.js
 ```
 
-- **Windows (current user):**  
-  `node data\default-user\extensions\third-party\redraft\server-plugin\install.js`
-
-- **Windows (all users):**  
-  `node public\scripts\extensions\third-party\redraft\server-plugin\install.js`
-
+- **Current user only:** `data/default-user/extensions/third-party/redraft/...`  
 - If your SillyTavern uses a different user folder, replace `default-user` with that folder name.
+
+**Windows (PowerShell or CMD):**
+
+```powershell
+cd C:\Path\To\Your\SillyTavern
+node data\default-user\extensions\third-party\redraft\server-plugin\install.js
+```
+
+- **Current user only:** `data\default-user\extensions\third-party\redraft\server-plugin\install.js`
+- **All users (shared install):** `public\scripts\extensions\third-party\redraft\server-plugin\install.js`
 
 ### Option B — From the ReDraft extension folder
 
-If you’re already in the ReDraft extension directory:
+If you’re already in the ReDraft extension directory, you can run the script there; it will search **upward** for the SillyTavern root (looks for `server.js` and `package.json` with name `sillytavern`).
+
+**Linux / macOS:**
 
 ```bash
-cd data/default-user/extensions/third-party/redraft
+cd /path/to/your/SillyTavern/data/default-user/extensions/third-party/redraft
 node server-plugin/install.js
 ```
 
-The script will search **upward** for the SillyTavern root (looks for `server.js` and `package.json` with name `sillytavern`). So you can run it from inside the extension folder and it will still find ST.
+**Windows:**
+
+```powershell
+cd C:\Path\To\Your\SillyTavern\data\default-user\extensions\third-party\redraft
+node server-plugin\install.js
+```
+
+(For “all users” installs, use `public\scripts\extensions\third-party\redraft` instead of `data\default-user\extensions\third-party\redraft`.)
 
 ---
 
