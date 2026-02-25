@@ -370,12 +370,14 @@ function detectPov(text) {
 
 /**
  * Call the server plugin API.
+ * Uses ST's request headers (including CSRF token) so requests aren't rejected as 403.
  * Handles HTML responses (e.g. 404/login pages) with a clear error instead of "is not valid JSON".
  */
 async function pluginRequest(endpoint, method = 'GET', body = null) {
+    const { getRequestHeaders } = SillyTavern.getContext();
     const options = {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: getRequestHeaders ? getRequestHeaders() : { 'Content-Type': 'application/json' },
     };
     if (body) {
         options.body = JSON.stringify(body);
