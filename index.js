@@ -68,10 +68,10 @@ const POV_LABELS = {
 };
 
 const POV_INSTRUCTIONS = {
-    '1st': 'The message is written in first person (I/me/my). Maintain this perspective exactly \u2014 do not shift to second or third person.',
-    '1.5': 'The message uses 1.5th-person PoV: first person (I/me/my) for the AI character\'s perspective, and second person (you/your) when referring to the player\'s character. Maintain this hybrid perspective exactly.',
-    '2nd': 'The message is written in second person (you/your). Maintain this perspective exactly \u2014 do not shift to first or third person.',
-    '3rd': 'The message is written in third person (he/she/they + character names). Maintain this perspective exactly \u2014 do not shift to first or second person.',
+    '1st': 'PERSPECTIVE RULES (MANDATORY): "I/me/my" = the AI narrator character ONLY. "you/your" = the player\'s character ONLY. All other characters = "he/she/they." These assignments are absolute \u2014 do not swap, mix, or shift them. If any pronoun violates this map, fix it.',
+    '1.5': 'PERSPECTIVE RULES (MANDATORY): "I/me/my" = the current POV AI character. "you/your" = the player\'s character \u2014 ALWAYS in descriptions and actions, no exceptions. All other AI characters = "he/she/they." Do not use "I" for the player\'s character under any circumstance. Do not use "he/she/they" for the player\'s character in descriptions or actions \u2014 always "you/your." If any pronoun violates this map, fix it.',
+    '2nd': 'PERSPECTIVE RULES (MANDATORY): "you/your" = the player\'s character ONLY \u2014 all narration addresses them as "you." All AI characters = "he/she/they" in narration (dialogue may use "I"). No AI character uses "I" in narrative voice. If any pronoun violates this map, fix it.',
+    '3rd': 'PERSPECTIVE RULES (MANDATORY): ALL characters (including the player\'s character) use "he/she/they" + names. No "I" in narration. No "you" in narration. If any pronoun violates this map, fix it.',
 };
 
 const BUILTIN_RULES = {
