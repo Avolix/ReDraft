@@ -49,6 +49,8 @@ const defaultSettings = Object.freeze({
     characterContextChars: 500,
     previousResponseTailChars: 200,
     protectFontTags: false,
+    notificationSoundEnabled: false,
+    notificationSoundUrl: '', // '' = built-in beep; or URL / data URL for custom
 });
 
 const POV_LABELS = {
@@ -369,6 +371,40 @@ function detectPov(text) {
 }
 
 /**
+ * Play the notification sound when refinement finishes.
+ * Uses built-in beep (Web Audio) if no custom URL is set; otherwise plays the configured URL or uploaded sound.
+ */
+function playNotificationSound() {
+    const settings = getSettings();
+    if (!settings.notificationSoundEnabled) return;
+
+    try {
+        const url = (settings.notificationSoundUrl || '').trim();
+        if (url) {
+            const audio = new Audio(url);
+            audio.volume = 0.6;
+            audio.play().catch(() => { /* autoplay / policy blocked */ });
+            return;
+        }
+
+        // Built-in short beep via Web Audio
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 880;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.12);
+    } catch {
+        // Ignore (e.g. AudioContext not allowed, invalid URL)
+    }
+}
+
+/**
  * Call the server plugin API.
  * Uses ST's request headers (including CSRF token) so requests aren't rejected as 403.
  * Handles HTML responses (e.g. 404/login pages) with a clear error instead of "is not valid JSON".
@@ -674,10 +710,11 @@ async function redraftMessage(messageIndex) {
             contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
         }
 
-        // Last user message (for echo detection)
-        const lastUserMsg = [...chat].reverse().find(m => m.is_user && m.mes);
-        if (lastUserMsg) {
-            contextParts.push(`Last user message:\n${lastUserMsg.mes}`);
+        // Last user message before this AI message (for echo detection and user-context rules)
+        const messagesBeforeThis = chat.slice(0, messageIndex);
+        const lastUserMsgBefore = [...messagesBeforeThis].reverse().find(m => m.is_user && m.mes);
+        if (lastUserMsgBefore) {
+            contextParts.push(`Last user message (what the user said before this response):\n${lastUserMsgBefore.mes}`);
         }
 
         // Previous AI response ending (for repetition detection)
@@ -740,6 +777,7 @@ Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
         }
 
         toastr.success('Message refined', 'ReDraft');
+        playNotificationSound();
         console.log(`${LOG_PREFIX} Message ${messageIndex} refined successfully (mode: ${settings.connectionMode})`);
 
     } catch (err) {
@@ -1398,6 +1436,54 @@ function bindSettingsUI() {
         });
     }
 
+    // Notification sound when refinement finishes
+    const notifSoundEl = document.getElementById('redraft_notification_sound');
+    if (notifSoundEl) {
+        notifSoundEl.checked = initSettings.notificationSoundEnabled === true;
+        notifSoundEl.addEventListener('change', (e) => {
+            getSettings().notificationSoundEnabled = e.target.checked;
+            saveSettings();
+        });
+    }
+    const notifSoundUrlEl = document.getElementById('redraft_notification_sound_url');
+    if (notifSoundUrlEl) {
+        const savedUrl = initSettings.notificationSoundUrl || '';
+        notifSoundUrlEl.value = savedUrl.startsWith('data:') ? '(uploaded file)' : savedUrl;
+        notifSoundUrlEl.addEventListener('change', (e) => {
+            const v = (e.target.value || '').trim();
+            if (v !== '(uploaded file)') getSettings().notificationSoundUrl = v;
+            saveSettings();
+        });
+    }
+    const notifSoundFileEl = document.getElementById('redraft_notification_sound_file');
+    const notifSoundUploadBtn = document.getElementById('redraft_notification_sound_upload_btn');
+    if (notifSoundFileEl && notifSoundUploadBtn) {
+        notifSoundUploadBtn.addEventListener('click', () => notifSoundFileEl.click());
+        notifSoundFileEl.addEventListener('change', (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                const dataUrl = reader.result;
+                if (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+                    getSettings().notificationSoundUrl = dataUrl;
+                    if (notifSoundUrlEl) notifSoundUrlEl.value = '(uploaded file)';
+                    saveSettings();
+                }
+            };
+            reader.readAsDataURL(file);
+            e.target.value = '';
+        });
+    }
+    const notifSoundClearBtn = document.getElementById('redraft_notification_sound_clear_btn');
+    if (notifSoundClearBtn) {
+        notifSoundClearBtn.addEventListener('click', () => {
+            getSettings().notificationSoundUrl = '';
+            if (notifSoundUrlEl) notifSoundUrlEl.value = '';
+            saveSettings();
+        });
+    }
+
     // System prompt
     const promptEl = document.getElementById('redraft_system_prompt');
     if (promptEl) {
@@ -1855,6 +1941,28 @@ function registerSlashCommand() {
                 <input type="checkbox" id="redraft_show_diff" />
                 <span>Show diff after refinement</span>
             </label>
+            <div class="redraft-form-group" style="margin-top: 8px;">
+                <label class="checkbox_label">
+                    <input type="checkbox" id="redraft_notification_sound" />
+                    <span>Play sound when refinement finishes</span>
+                </label>
+                <div id="redraft_notification_sound_options" style="margin-left: 1.5em; margin-top: 6px;">
+                    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px;">
+                        <input type="url" id="redraft_notification_sound_url" class="text_pole" placeholder="Custom sound URL (optional)" style="flex: 1; min-width: 160px;" />
+                        <span style="white-space: nowrap;">or</span>
+                        <input type="file" id="redraft_notification_sound_file" accept="audio/*" hidden />
+                        <div id="redraft_notification_sound_upload_btn" class="menu_button menu_button_icon" title="Upload a sound file (WAV, MP3, etc.)">
+                            <i class="fa-solid fa-file-audio"></i>
+                            <span>Upload</span>
+                        </div>
+                        <div id="redraft_notification_sound_clear_btn" class="menu_button menu_button_icon" title="Use default beep">
+                            <i class="fa-solid fa-rotate-left"></i>
+                            <span>Default</span>
+                        </div>
+                    </div>
+                    <small class="redraft-section-hint" style="display: block; margin-top: 4px;">Leave empty for a short default beep. Use a URL or upload your own (saved in browser).</small>
+                </div>
+            </div>
 
             <!-- Connection Section -->
             <div class="inline-drawer">
