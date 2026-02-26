@@ -4,6 +4,15 @@ All notable user-facing changes to ReDraft are documented here.
 
 ---
 
+## 2.4.0
+
+**Separate User Message PoV** — user message enhancement now has its own Point of View setting.
+
+- **Decoupled PoV controls** — the global PoV setting in Advanced now only applies to AI message refinement. User message enhancement has its own PoV dropdown in the Enhance section, defaulting to 1st person.
+- **User-specific PoV instructions** — the perspective rules sent to the LLM for user messages now use wording appropriate for user-written text (e.g., "the user's character") instead of reusing the AI-narration instructions.
+
+---
+
 ## 2.3.0
 
 **Configurable Timeout & Stop Drafting** — better support for thinking models and slow APIs.

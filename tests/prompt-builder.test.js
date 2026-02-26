@@ -3,6 +3,7 @@ import {
     buildAiRefinePrompt,
     buildUserEnhancePrompt,
     POV_INSTRUCTIONS,
+    USER_POV_INSTRUCTIONS,
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_USER_ENHANCE_SYSTEM_PROMPT,
 } from '../lib/prompt-builder.js';
@@ -283,14 +284,36 @@ describe('buildUserEnhancePrompt', () => {
         expect(promptText).not.toContain('refinement rules');
     });
 
-    it('includes POV instructions for explicit setting', () => {
-        const settings = { ...baseSettings, pov: '2nd' };
+    it('uses userPov setting instead of global pov', () => {
+        const settings = { ...baseSettings, pov: '3rd', userPov: '1st' };
         const chat = makeChat([{ is_user: true, mes: 'Test.' }]);
         const { promptText } = buildUserEnhancePrompt(
             settings, makeContext(), chat, 0, 'Test.',
             { rulesText: '1. Rule.', personaDesc: '', systemPrompt: DEFAULT_USER_ENHANCE_SYSTEM_PROMPT },
         );
-        expect(promptText).toContain(POV_INSTRUCTIONS['2nd']);
+        expect(promptText).toContain(USER_POV_INSTRUCTIONS['1st']);
+        expect(promptText).not.toContain(POV_INSTRUCTIONS['3rd']);
+    });
+
+    it('uses USER_POV_INSTRUCTIONS (not AI POV_INSTRUCTIONS)', () => {
+        const settings = { ...baseSettings, userPov: '3rd' };
+        const chat = makeChat([{ is_user: true, mes: 'Test.' }]);
+        const { promptText } = buildUserEnhancePrompt(
+            settings, makeContext(), chat, 0, 'Test.',
+            { rulesText: '1. Rule.', personaDesc: '', systemPrompt: DEFAULT_USER_ENHANCE_SYSTEM_PROMPT },
+        );
+        expect(promptText).toContain(USER_POV_INSTRUCTIONS['3rd']);
+    });
+
+    it('falls back to global pov when userPov is not set', () => {
+        const settings = { ...baseSettings, pov: '2nd' };
+        delete settings.userPov;
+        const chat = makeChat([{ is_user: true, mes: 'Test.' }]);
+        const { promptText } = buildUserEnhancePrompt(
+            settings, makeContext(), chat, 0, 'Test.',
+            { rulesText: '1. Rule.', personaDesc: '', systemPrompt: DEFAULT_USER_ENHANCE_SYSTEM_PROMPT },
+        );
+        expect(promptText).toContain('Point of view:');
     });
 
     it('truncates persona description to characterContextChars', () => {
@@ -324,6 +347,13 @@ describe('exported constants', () => {
             expect.arrayContaining(['1st', '1.5', '2nd', '3rd']),
         );
         expect(Object.keys(POV_INSTRUCTIONS)).toHaveLength(4);
+    });
+
+    it('USER_POV_INSTRUCTIONS covers 1st, 2nd, and 3rd person', () => {
+        expect(Object.keys(USER_POV_INSTRUCTIONS)).toEqual(
+            expect.arrayContaining(['1st', '2nd', '3rd']),
+        );
+        expect(Object.keys(USER_POV_INSTRUCTIONS)).toHaveLength(3);
     });
 
     it('DEFAULT_SYSTEM_PROMPT contains CHANGELOG and REFINED tags', () => {

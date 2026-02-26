@@ -22,6 +22,7 @@ import {
     buildAiRefinePrompt as _buildAiRefinePrompt,
     buildUserEnhancePrompt as _buildUserEnhancePrompt,
     POV_INSTRUCTIONS,
+    USER_POV_INSTRUCTIONS,
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_USER_ENHANCE_SYSTEM_PROMPT,
 } from './lib/prompt-builder.js';
@@ -33,7 +34,7 @@ import {
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
-const EXTENSION_VERSION = '2.3.0';
+const EXTENSION_VERSION = '2.4.0';
 
 /**
  * Base URL path for the ReDraft server plugin API. Thin adapter over the
@@ -65,6 +66,7 @@ const defaultSettings = Object.freeze({
         expandBrevity: false,
     },
     userCustomRules: [],
+    userPov: '1st', // '1st' | 'auto' | 'detect' | '2nd' | '3rd'
     connectionMode: 'st', // 'st' or 'plugin'
     builtInRules: {
         grammar: true,
@@ -1415,6 +1417,16 @@ function bindSettingsUI() {
         });
     }
 
+    // User PoV selector
+    const userPovEl = document.getElementById('redraft_user_pov');
+    if (userPovEl) {
+        userPovEl.value = initSettings.userPov || '1st';
+        userPovEl.addEventListener('change', (e) => {
+            getSettings().userPov = e.target.value;
+            saveSettings();
+        });
+    }
+
     // User built-in rule toggles
     for (const key of Object.keys(BUILTIN_USER_RULES)) {
         const el = document.getElementById(`redraft_user_rule_${key}`);
@@ -2562,6 +2574,17 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                         </select>
                     </div>
                     <small id="redraft_enhance_mode_hint" class="redraft-section-hint" style="display: none;"></small>
+
+                    <div class="redraft-form-group redraft-pov-group">
+                        <label for="redraft_user_pov">Point of View</label>
+                        <select id="redraft_user_pov">
+                            <option value="1st">1st person (I/me)</option>
+                            <option value="auto">Auto (no instruction)</option>
+                            <option value="detect">Detect from message</option>
+                            <option value="2nd">2nd person (you)</option>
+                            <option value="3rd">3rd person (he/she/they)</option>
+                        </select>
+                    </div>
 
                     <div id="redraft_post_send_options">
                         <label class="checkbox_label" title="Automatically enhance your messages right after you send them.">
