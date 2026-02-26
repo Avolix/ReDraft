@@ -2315,35 +2315,22 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     // Only intercept normal user-initiated generations
     if (type === 'quiet' || type === 'impersonate') return;
 
-    // Find the last user message — search in context.chat (full chat) for correct DOM index.
-    // The interceptor's `chat` param may be a trimmed subset for prompt building, so we use
-    // it only to identify the message object, then resolve its real index in context.chat.
+    // Find the last user message directly in context.chat (the authoritative array).
+    // The interceptor's `chat` param may contain cloned objects, so reference comparison
+    // won't work — instead we search fullChat directly and update both arrays.
     const context = SillyTavern.getContext();
     const fullChat = context.chat;
 
-    let message = null;
     let realIdx = -1;
-
-    // Walk backward through the interceptor's chat to find the last user message object
-    for (let i = chat.length - 1; i >= 0; i--) {
-        if (chat[i].is_user && chat[i].mes) {
-            message = chat[i];
-            break;
-        }
-    }
-    if (!message) return;
-
-    // Resolve the real index in context.chat (same object reference)
     for (let i = fullChat.length - 1; i >= 0; i--) {
-        if (fullChat[i] === message) {
+        if (fullChat[i].is_user && fullChat[i].mes) {
             realIdx = i;
             break;
         }
     }
-    if (realIdx < 0) {
-        console.warn(`${LOG_PREFIX} [pre-send] Could not resolve real index for user message, skipping`);
-        return;
-    }
+    if (realIdx < 0) return;
+
+    const message = fullChat[realIdx];
 
     // Skip very short messages (e.g. "ok", "sure", "*nods*")
     if (message.mes.trim().length < 20) {
@@ -2448,6 +2435,16 @@ Rules:\n${rulesText}\n\nOriginal message:\n${stripped}`;
         chatMetadata['redraft_diffs'][realIdx] = { original: message.mes, changelog: changelog || null };
 
         message.mes = refinedText;
+
+        // Also update the interceptor's chat array so the enhanced text is sent to the LLM.
+        // The interceptor receives clones, so fullChat and chat hold different objects.
+        for (let i = chat.length - 1; i >= 0; i--) {
+            if (chat[i].is_user && chat[i].mes) {
+                chat[i].mes = refinedText;
+                break;
+            }
+        }
+
         await saveChat();
         await saveMeta();
 
