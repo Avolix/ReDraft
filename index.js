@@ -2303,20 +2303,45 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     // Only intercept normal user-initiated generations
     if (type === 'quiet' || type === 'impersonate') return;
 
-    // Find the last user message directly in context.chat (the authoritative array).
-    // The interceptor's `chat` param may contain cloned objects, so reference comparison
-    // won't work — instead we search fullChat directly and update both arrays.
+    // Find the last user message from the interceptor's chat (guaranteed to include it),
+    // then resolve its real index in context.chat via send_date for DOM operations.
     const context = SillyTavern.getContext();
     const fullChat = context.chat;
 
-    let realIdx = -1;
-    for (let i = fullChat.length - 1; i >= 0; i--) {
-        if (fullChat[i].is_user && fullChat[i].mes) {
-            realIdx = i;
+    // Step 1: identify the target message from the interceptor's array
+    let chatMsg = null;
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (chat[i].is_user && chat[i].mes) {
+            chatMsg = chat[i];
             break;
         }
     }
-    if (realIdx < 0) return;
+    if (!chatMsg) return;
+
+    // Step 2: resolve the real index in fullChat by send_date (objects are clones, not refs)
+    let realIdx = -1;
+    const targetDate = chatMsg.send_date;
+    if (targetDate) {
+        for (let i = fullChat.length - 1; i >= 0; i--) {
+            if (fullChat[i].send_date === targetDate) {
+                realIdx = i;
+                break;
+            }
+        }
+    }
+    // Fallback: match by content for older ST versions without send_date
+    if (realIdx < 0) {
+        for (let i = fullChat.length - 1; i >= 0; i--) {
+            if (fullChat[i].is_user && fullChat[i].mes === chatMsg.mes) {
+                realIdx = i;
+                break;
+            }
+        }
+    }
+    if (realIdx < 0) {
+        console.warn(`${LOG_PREFIX} [pre-send] Could not resolve real index for user message, skipping`);
+        return;
+    }
 
     const message = fullChat[realIdx];
 
@@ -2326,11 +2351,19 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
         return;
     }
 
-    // Skip if this message was already enhanced (avoid double-enhance on regenerate/swipe)
+    // Skip if this exact message was already enhanced (compare send_date, not just index)
     const originals = context.chatMetadata?.['redraft_originals'];
+    const enhancedDates = context.chatMetadata?.['redraft_enhanced_dates'];
     if (originals && originals[realIdx] !== undefined) {
-        console.debug(`${LOG_PREFIX} [pre-send] Message ${realIdx} already has an original stored, skipping`);
-        return;
+        if (enhancedDates?.[realIdx] === targetDate) {
+            console.debug(`${LOG_PREFIX} [pre-send] Message ${realIdx} already enhanced (same send_date), skipping`);
+            return;
+        }
+        // Different message at same index — clear stale metadata
+        console.debug(`${LOG_PREFIX} [pre-send] Stale metadata at index ${realIdx}, clearing`);
+        delete originals[realIdx];
+        if (context.chatMetadata['redraft_diffs']) delete context.chatMetadata['redraft_diffs'][realIdx];
+        if (enhancedDates) delete enhancedDates[realIdx];
     }
 
     // Check plugin availability if in plugin mode
@@ -2422,16 +2455,14 @@ Rules:\n${rulesText}\n\nOriginal message:\n${stripped}`;
         if (!chatMetadata['redraft_diffs']) chatMetadata['redraft_diffs'] = {};
         chatMetadata['redraft_diffs'][realIdx] = { original: message.mes, changelog: changelog || null };
 
+        if (!chatMetadata['redraft_enhanced_dates']) chatMetadata['redraft_enhanced_dates'] = {};
+        chatMetadata['redraft_enhanced_dates'][realIdx] = targetDate;
+
         message.mes = refinedText;
 
         // Also update the interceptor's chat array so the enhanced text is sent to the LLM.
         // The interceptor receives clones, so fullChat and chat hold different objects.
-        for (let i = chat.length - 1; i >= 0; i--) {
-            if (chat[i].is_user && chat[i].mes) {
-                chat[i].mes = refinedText;
-                break;
-            }
-        }
+        if (chatMsg) chatMsg.mes = refinedText;
 
         await saveChat();
         await saveMeta();
