@@ -4,6 +4,8 @@ The **Separate LLM** option lets you use a different API and model for refinemen
 
 You only need to do this **once** per SillyTavern installation.
 
+**Already have the plugin?** If you installed it before auto-update was added, run the installer **once more** so the new plugin code (which can auto-update when you update ReDraft within ST) is in place. After that, you won’t need to run the installer again when you update the extension through SillyTavern.
+
 ---
 
 ## Prerequisites
@@ -107,7 +109,9 @@ So in a multi-user setup, either accept one shared refinement API/model for all 
 
 ### Auto-update when you update ReDraft within ST
 
-If you update the ReDraft extension **through SillyTavern** (e.g. Extensions → Update), the server plugin **auto-updates on the next SillyTavern restart**. When the plugin loads, it checks whether the extension's `server-plugin/` folder (in ST's extension directory) is newer than the installed plugin in `plugins/redraft/`. If it is, it copies the new `index.js` and `config.json.example` into the plugin folder and logs: *"Server plugin updated from extension (updated within ST). Restart SillyTavern to use the new version."* Restart ST once more to run the new code. Your `config.json` (API credentials) is never overwritten.
+If you update the ReDraft extension **through SillyTavern** (e.g. Extensions → Update), the server plugin **auto-updates on the next SillyTavern restart**.  
+
+**One-time:** You need to install or update the server plugin **once** (run the install script, or copy the new `server-plugin/index.js` into `plugins/redraft/`) so the version that includes this auto-update logic is in place. After that, future ReDraft updates within ST will update the plugin automatically. When the plugin loads, it checks whether the extension's `server-plugin/` folder (in ST's extension directory) is newer than the installed plugin in `plugins/redraft/`. If it is, it copies the new `index.js` and `config.json.example` into the plugin folder and logs: *"Server plugin updated from extension (updated within ST). Restart SillyTavern to use the new version."* Restart ST once more to run the new code. Your `config.json` (API credentials) is never overwritten.
 
 So: **Update ReDraft in ST → restart SillyTavern** (and if you see the message, restart again). No need to run the install script manually when you update within ST.
 
