@@ -109,10 +109,69 @@ function sanitizeError(message) {
 }
 
 /**
+ * If the ReDraft extension was updated within ST, its server-plugin folder may be newer than
+ * the installed plugin. Copy those files here so the next restart runs the updated plugin.
+ * Does not overwrite config.json (user credentials).
+ */
+function tryUpdateFromExtension() {
+    const pluginDir = __dirname;
+    const stRoot = path.join(pluginDir, '..', '..');
+    const candidatePaths = [
+        path.join(stRoot, 'data', 'default-user', 'extensions', 'third-party', 'redraft', 'server-plugin'),
+        path.join(stRoot, 'public', 'scripts', 'extensions', 'third-party', 'redraft', 'server-plugin'),
+    ];
+    let extensionDir = null;
+    for (const p of candidatePaths) {
+        const idx = path.join(p, 'index.js');
+        if (fs.existsSync(idx)) {
+            extensionDir = p;
+            break;
+        }
+    }
+    if (!extensionDir) return;
+
+    const extIndex = path.join(extensionDir, 'index.js');
+    const localIndex = path.join(pluginDir, 'index.js');
+    let extMtime;
+    let localMtime;
+    try {
+        extMtime = fs.statSync(extIndex).mtimeMs;
+        localMtime = fs.statSync(localIndex).mtimeMs;
+    } catch {
+        return;
+    }
+    if (extMtime <= localMtime) return;
+
+    const filesToCopy = ['index.js', 'config.json.example'];
+    for (const file of filesToCopy) {
+        const src = path.join(extensionDir, file);
+        const dest = path.join(pluginDir, file);
+        if (!fs.existsSync(src)) continue;
+        try {
+            fs.copyFileSync(src, dest);
+        } catch (e) {
+            console.warn(`[${MODULE_NAME}] Could not copy ${file}:`, e.message);
+            if (file === 'index.js') return;
+        }
+    }
+    const pkgPath = path.join(pluginDir, 'package.json');
+    if (!fs.existsSync(pkgPath)) {
+        try {
+            fs.writeFileSync(pkgPath, JSON.stringify({ type: 'commonjs' }, null, 2) + '\n', 'utf-8');
+        } catch (e) {
+            console.warn(`[${MODULE_NAME}] Could not write package.json:`, e.message);
+        }
+    }
+    console.log(`[${MODULE_NAME}] Server plugin updated from extension (updated within ST). Restart SillyTavern to use the new version.`);
+}
+
+/**
  * Initialize the ReDraft server plugin.
  * @param {import('express').Router} router
  */
 async function init(router) {
+    tryUpdateFromExtension();
+
     readConfig();
 
     const configDir = path.dirname(CONFIG_PATH);

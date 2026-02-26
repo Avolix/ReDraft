@@ -105,6 +105,14 @@ So in a multi-user setup, either accept one shared refinement API/model for all 
 
 ## When to reinstall the server plugin
 
+### Auto-update when you update ReDraft within ST
+
+If you update the ReDraft extension **through SillyTavern** (e.g. Extensions → Update), the server plugin **auto-updates on the next SillyTavern restart**. When the plugin loads, it checks whether the extension's `server-plugin/` folder (in ST's extension directory) is newer than the installed plugin in `plugins/redraft/`. If it is, it copies the new `index.js` and `config.json.example` into the plugin folder and logs: *"Server plugin updated from extension (updated within ST). Restart SillyTavern to use the new version."* Restart ST once more to run the new code. Your `config.json` (API credentials) is never overwritten.
+
+So: **Update ReDraft in ST → restart SillyTavern** (and if you see the message, restart again). No need to run the install script manually when you update within ST.
+
+### Manual reinstall
+
 You **must** re-run the installer and restart SillyTavern when the **server plugin** code changes (e.g. after updating ReDraft and the changelog or release notes say “server plugin update required”). The running plugin lives in `plugins/redraft/`; the installer copies the latest `index.js` (and `config.json.example`) from the extension into that folder.
 
 You **do not** need to reinstall when only the **extension** (client) changes — e.g. UI, connection logic, or base-path/proxy fixes. Reload the SillyTavern tab to pick those up. You also do not need to reinstall when only the **install script** (`install.js`) changes; that only affects the next run of the installer.
