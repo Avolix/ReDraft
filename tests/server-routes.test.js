@@ -85,6 +85,121 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
+// ─── Auto-update (tryUpdateFromExtension) ───────────────────────────
+
+describe('tryUpdateFromExtension (auto-update)', () => {
+    const pluginDir = path.dirname(pluginPath);
+    const stRoot = path.resolve(pluginDir, '..', '..');
+    const dataDir = path.join(stRoot, 'data');
+    const thirdPartyDir = path.join(dataDir, 'default-user', 'extensions', 'third-party');
+    const extServerPluginDir = path.join(thirdPartyDir, 'redraft', 'server-plugin');
+    const extIndexPath = path.join(extServerPluginDir, 'index.js');
+
+    const pluginSource = fs.readFileSync(pluginPath, 'utf-8');
+    const currentVersion = pluginSource.match(/SERVER_PLUGIN_VERSION\s*=\s*['"]([^'"]+)['"]/)[1];
+
+    /**
+     * Initialize a fresh plugin instance with fs mocks that simulate an ST
+     * data directory containing the extension's server-plugin at the given
+     * version. Pass null to simulate no extension found.
+     */
+    async function initWithExtensionVersion(extensionVersion) {
+        vi.restoreAllMocks();
+
+        const realExistsSync = fs.existsSync;
+        const realReadFileSync = fs.readFileSync;
+        const realReaddirSync = fs.readdirSync;
+        const realStatSync = fs.statSync;
+
+        vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
+            const norm = path.normalize(String(p));
+            if (extensionVersion && norm.startsWith(path.normalize(extServerPluginDir))) return true;
+            if (norm === path.normalize(dataDir)) return !!extensionVersion;
+            if (norm === path.normalize(thirdPartyDir)) return !!extensionVersion;
+            if (norm === path.normalize(path.join(pluginDir, 'package.json'))) return true;
+            if (typeof p === 'string' && p.endsWith('.json') && path.basename(p).startsWith('config')) return false;
+            return realExistsSync(p);
+        });
+
+        vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...args) => {
+            const norm = path.normalize(String(p));
+            if (extensionVersion && norm === path.normalize(extIndexPath)) {
+                return `const SERVER_PLUGIN_VERSION = '${extensionVersion}';`;
+            }
+            if (typeof p === 'string' && p.endsWith('.json') && path.basename(p).startsWith('config')) return '';
+            return realReadFileSync(p, ...args);
+        });
+
+        vi.spyOn(fs, 'readdirSync').mockImplementation((p, options) => {
+            const norm = path.normalize(String(p));
+            if (extensionVersion && norm === path.normalize(dataDir)) {
+                return [{ name: 'default-user', isDirectory: () => true }];
+            }
+            if (extensionVersion && norm === path.normalize(thirdPartyDir)) {
+                return [{ name: 'redraft', isDirectory: () => true }];
+            }
+            if (norm === path.normalize(pluginDir)) return [];
+            return realReaddirSync(p, options);
+        });
+
+        vi.spyOn(fs, 'statSync').mockImplementation((p) => {
+            const norm = path.normalize(String(p));
+            if (extensionVersion && norm === path.normalize(extIndexPath)) {
+                return { mtimeMs: Date.now() };
+            }
+            return realStatSync(p);
+        });
+
+        vi.spyOn(fs, 'copyFileSync').mockImplementation(() => {});
+        vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+        vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {});
+        vi.spyOn(fs, 'watch').mockReturnValue({ close: vi.fn() });
+
+        delete require.cache[pluginPath];
+        delete require.cache[utilsPath];
+
+        const router = createSpyRouter();
+        const plugin = require(pluginPath);
+        await plugin.init(router);
+        return router._routes;
+    }
+
+    it('copies files when extension has a newer version', async () => {
+        await initWithExtensionVersion('99.0.0');
+
+        const copyCalls = fs.copyFileSync.mock.calls;
+        const indexCopy = copyCalls.find(([src]) => String(src).endsWith('index.js'));
+        expect(indexCopy).toBeDefined();
+        expect(path.normalize(String(indexCopy[0]))).toBe(path.normalize(extIndexPath));
+        expect(path.normalize(String(indexCopy[1]))).toBe(path.normalize(path.join(pluginDir, 'index.js')));
+    });
+
+    it('also copies lib/utils.js when updating', async () => {
+        await initWithExtensionVersion('99.0.0');
+
+        const copyCalls = fs.copyFileSync.mock.calls;
+        const utilsCopy = copyCalls.find(([src]) =>
+            path.normalize(String(src)) === path.normalize(path.join(extServerPluginDir, 'lib', 'utils.js')),
+        );
+        expect(utilsCopy).toBeDefined();
+    });
+
+    it('does not copy when extension has the same version', async () => {
+        await initWithExtensionVersion(currentVersion);
+        expect(fs.copyFileSync).not.toHaveBeenCalled();
+    });
+
+    it('does not copy when extension has an older version', async () => {
+        await initWithExtensionVersion('0.0.1');
+        expect(fs.copyFileSync).not.toHaveBeenCalled();
+    });
+
+    it('does not copy when no extension is found', async () => {
+        await initWithExtensionVersion(null);
+        expect(fs.copyFileSync).not.toHaveBeenCalled();
+    });
+});
+
 // ─── GET /status ────────────────────────────────────────────────────
 
 describe('GET /status', () => {

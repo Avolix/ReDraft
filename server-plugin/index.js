@@ -9,7 +9,7 @@
  */
 const path = require('path');
 const fs = require('fs');
-const { getUserId, getConfigPath: _getConfigPath, maskKey, validateApiUrl, sanitizeError } = require('./lib/utils');
+const { getUserId, getConfigPath: _getConfigPath, maskKey, validateApiUrl, sanitizeError, isNewerVersion } = require('./lib/utils');
 
 const CONFIG_DIR = __dirname;
 const MODULE_NAME = 'redraft';
@@ -146,19 +146,6 @@ function parseVersionFromFile(filePath) {
     } catch {
         return null;
     }
-}
-
-/**
- * True when semver string `a` is strictly newer than `b`.
- */
-function isNewerVersion(a, b) {
-    const pa = a.split('.').map(Number);
-    const pb = b.split('.').map(Number);
-    for (let i = 0; i < 3; i++) {
-        if ((pa[i] || 0) > (pb[i] || 0)) return true;
-        if ((pa[i] || 0) < (pb[i] || 0)) return false;
-    }
-    return false;
 }
 
 /**

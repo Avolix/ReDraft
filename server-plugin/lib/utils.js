@@ -107,10 +107,29 @@ function sanitizeError(message, config) {
     return message;
 }
 
+/**
+ * True when semver string `a` is strictly newer than `b`.
+ * Compares up to three numeric components (major.minor.patch).
+ * Missing or non-numeric components are treated as 0.
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function isNewerVersion(a, b) {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+        if ((pa[i] || 0) > (pb[i] || 0)) return true;
+        if ((pa[i] || 0) < (pb[i] || 0)) return false;
+    }
+    return false;
+}
+
 module.exports = {
     getUserId,
     getConfigPath,
     maskKey,
     validateApiUrl,
     sanitizeError,
+    isNewerVersion,
 };

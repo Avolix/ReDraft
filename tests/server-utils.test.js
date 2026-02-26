@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import path from 'path';
 
 const require = createRequire(import.meta.url);
-const { getUserId, getConfigPath, maskKey, validateApiUrl, sanitizeError } = require('../server-plugin/lib/utils.js');
+const { getUserId, getConfigPath, maskKey, validateApiUrl, sanitizeError, isNewerVersion } = require('../server-plugin/lib/utils.js');
 
 // ─── getUserId ──────────────────────────────────────────────────────
 
@@ -212,6 +212,63 @@ describe('validateApiUrl', () => {
     it('allows normal public IPs', () => {
         expect(validateApiUrl('http://8.8.8.8').valid).toBe(true);
         expect(validateApiUrl('https://203.0.113.5').valid).toBe(true);
+    });
+});
+
+// ─── isNewerVersion ─────────────────────────────────────────────────
+
+describe('isNewerVersion', () => {
+    it('returns true when major is higher', () => {
+        expect(isNewerVersion('2.0.0', '1.0.0')).toBe(true);
+    });
+
+    it('returns true when minor is higher', () => {
+        expect(isNewerVersion('1.2.0', '1.1.0')).toBe(true);
+    });
+
+    it('returns true when patch is higher', () => {
+        expect(isNewerVersion('1.1.2', '1.1.1')).toBe(true);
+    });
+
+    it('returns false when versions are equal', () => {
+        expect(isNewerVersion('1.2.0', '1.2.0')).toBe(false);
+    });
+
+    it('returns false when major is lower', () => {
+        expect(isNewerVersion('1.0.0', '2.0.0')).toBe(false);
+    });
+
+    it('returns false when minor is lower', () => {
+        expect(isNewerVersion('1.1.0', '1.2.0')).toBe(false);
+    });
+
+    it('returns false when patch is lower', () => {
+        expect(isNewerVersion('1.1.0', '1.1.1')).toBe(false);
+    });
+
+    it('handles higher minor vs lower patch correctly', () => {
+        expect(isNewerVersion('1.2.0', '1.1.9')).toBe(true);
+    });
+
+    it('handles higher major vs lower minor correctly', () => {
+        expect(isNewerVersion('2.0.0', '1.99.99')).toBe(true);
+    });
+
+    it('treats missing patch as 0', () => {
+        expect(isNewerVersion('1.2', '1.2.0')).toBe(false);
+        expect(isNewerVersion('1.2.0', '1.2')).toBe(false);
+        expect(isNewerVersion('1.3', '1.2.9')).toBe(true);
+    });
+
+    it('handles single-component versions', () => {
+        expect(isNewerVersion('2', '1')).toBe(true);
+        expect(isNewerVersion('1', '2')).toBe(false);
+        expect(isNewerVersion('1', '1')).toBe(false);
+    });
+
+    it('handles real-world version bump (1.1.1 → 1.2.0)', () => {
+        expect(isNewerVersion('1.2.0', '1.1.1')).toBe(true);
+        expect(isNewerVersion('1.1.1', '1.2.0')).toBe(false);
     });
 });
 
