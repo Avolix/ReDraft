@@ -34,7 +34,7 @@ import {
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
-const EXTENSION_VERSION = '2.4.1';
+const EXTENSION_VERSION = '2.5.0';
 
 /**
  * Base URL path for the ReDraft server plugin API. Thin adapter over the
@@ -89,6 +89,10 @@ const defaultSettings = Object.freeze({
     notificationSoundEnabled: false,
     notificationSoundUrl: '', // '' = built-in beep; or URL / data URL for custom
     requestTimeoutSeconds: 120,
+    reasoningContext: false,
+    reasoningContextMode: 'tags', // 'tags' (extract XML tags) or 'raw' (truncated pass-through)
+    reasoningContextChars: 1000,
+    reasoningContextRawFallback: true, // in 'tags' mode, fall back to raw if no tags found
 });
 
 // POV_INSTRUCTIONS imported from ./lib/prompt-builder.js
@@ -670,9 +674,11 @@ async function redraftMessage(messageIndex) {
             console.debug(`${LOG_PREFIX} Enhancing user message ${messageIndex}`);
         } else {
             // ── AI message refinement ──
+            const reasoning = settings.reasoningContext ? (message.extra?.reasoning || '') : '';
             ({ systemPrompt, promptText } = _buildAiRefinePrompt(settings, context, chat, messageIndex, strippedMessage, {
                 rulesText: compileRules(settings),
                 systemPrompt: settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT,
+                reasoning,
             }));
         }
 
@@ -1621,6 +1627,44 @@ function bindSettingsUI() {
         protectFontEl.checked = initSettings.protectFontTags === true;
         protectFontEl.addEventListener('change', (e) => {
             getSettings().protectFontTags = e.target.checked;
+            saveSettings();
+        });
+    }
+
+    // Reasoning context
+    const reasoningCtxEl = document.getElementById('redraft_reasoning_context');
+    const reasoningOptsEl = document.getElementById('redraft_reasoning_options');
+    if (reasoningCtxEl) {
+        reasoningCtxEl.checked = initSettings.reasoningContext === true;
+        if (reasoningOptsEl) reasoningOptsEl.style.display = reasoningCtxEl.checked ? '' : 'none';
+        reasoningCtxEl.addEventListener('change', (e) => {
+            getSettings().reasoningContext = e.target.checked;
+            if (reasoningOptsEl) reasoningOptsEl.style.display = e.target.checked ? '' : 'none';
+            saveSettings();
+        });
+    }
+    const reasoningModeEl = document.getElementById('redraft_reasoning_mode');
+    if (reasoningModeEl) {
+        reasoningModeEl.value = initSettings.reasoningContextMode || 'tags';
+        reasoningModeEl.addEventListener('change', (e) => {
+            getSettings().reasoningContextMode = e.target.value;
+            saveSettings();
+        });
+    }
+    const reasoningCharsEl = document.getElementById('redraft_reasoning_chars');
+    if (reasoningCharsEl) {
+        const val = initSettings.reasoningContextChars ?? 1000;
+        reasoningCharsEl.value = String([500, 1000, 2000, 4000].includes(val) ? val : 1000);
+        reasoningCharsEl.addEventListener('change', (e) => {
+            getSettings().reasoningContextChars = parseInt(e.target.value, 10);
+            saveSettings();
+        });
+    }
+    const reasoningFallbackEl = document.getElementById('redraft_reasoning_raw_fallback');
+    if (reasoningFallbackEl) {
+        reasoningFallbackEl.checked = initSettings.reasoningContextRawFallback !== false;
+        reasoningFallbackEl.addEventListener('change', (e) => {
+            getSettings().reasoningContextRawFallback = e.target.checked;
             saveSettings();
         });
     }
@@ -2707,6 +2751,33 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                         <input type="checkbox" id="redraft_protect_font_tags" />
                         <span>Protect font/color tags</span>
                     </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="redraft_reasoning_context" />
+                        <span>Include reasoning context</span>
+                    </label>
+                    <div id="redraft_reasoning_options" style="display: none; margin-left: 1em;">
+                        <div class="redraft-form-group">
+                            <label for="redraft_reasoning_mode">Reasoning mode</label>
+                            <select id="redraft_reasoning_mode">
+                                <option value="tags">Extract tags (token-efficient)</option>
+                                <option value="raw">Raw pass-through</option>
+                            </select>
+                            <small class="redraft-hint">Tags mode extracts structured settings from CoT. Raw mode passes truncated reasoning text.</small>
+                        </div>
+                        <div class="redraft-form-group">
+                            <label for="redraft_reasoning_chars">Raw context limit (chars)</label>
+                            <select id="redraft_reasoning_chars">
+                                <option value="500">500</option>
+                                <option value="1000">1000</option>
+                                <option value="2000">2000</option>
+                                <option value="4000">4000</option>
+                            </select>
+                        </div>
+                        <label class="checkbox_label">
+                            <input type="checkbox" id="redraft_reasoning_raw_fallback" />
+                            <span>Fall back to raw if no tags found</span>
+                        </label>
+                    </div>
                     <div class="redraft-form-group">
                         <label for="redraft_system_prompt">System Prompt Override (AI messages)</label>
                         <textarea id="redraft_system_prompt" class="text_pole textarea_compact redraft-system-prompt" rows="3"

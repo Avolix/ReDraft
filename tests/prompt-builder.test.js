@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
     buildAiRefinePrompt,
     buildUserEnhancePrompt,
+    extractReasoningTags,
+    truncateReasoning,
     POV_INSTRUCTIONS,
     USER_POV_INSTRUCTIONS,
     DEFAULT_SYSTEM_PROMPT,
@@ -364,5 +366,203 @@ describe('exported constants', () => {
     it('DEFAULT_USER_ENHANCE_SYSTEM_PROMPT contains CHANGELOG and REFINED tags', () => {
         expect(DEFAULT_USER_ENHANCE_SYSTEM_PROMPT).toContain('[CHANGELOG]');
         expect(DEFAULT_USER_ENHANCE_SYSTEM_PROMPT).toContain('[REFINED]');
+    });
+});
+
+// ─── extractReasoningTags ───────────────────────────────────────────
+
+describe('extractReasoningTags', () => {
+    it('extracts a single known tag', () => {
+        const reasoning = 'Some thinking... <society>\nStructure: Patriarchal\n</society> more text';
+        const result = extractReasoningTags(reasoning);
+        expect(result).toContain('<society>');
+        expect(result).toContain('Patriarchal');
+        expect(result).toContain('</society>');
+    });
+
+    it('extracts multiple known tags', () => {
+        const reasoning = '<society>Egalitarian</society> blah <power_dynamic>Female-Dominant</power_dynamic>';
+        const result = extractReasoningTags(reasoning);
+        expect(result).toContain('<society>Egalitarian</society>');
+        expect(result).toContain('<power_dynamic>Female-Dominant</power_dynamic>');
+    });
+
+    it('extracts all four supported tag types', () => {
+        const reasoning = [
+            '<society>Matriarchal</society>',
+            '<power_dynamic>Switch</power_dynamic>',
+            '<conviction>Hardened</conviction>',
+            '<language_output>English (Archaic)</language_output>',
+        ].join(' reasoning text ');
+        const result = extractReasoningTags(reasoning);
+        expect(result).toContain('<society>');
+        expect(result).toContain('<power_dynamic>');
+        expect(result).toContain('<conviction>');
+        expect(result).toContain('<language_output>');
+    });
+
+    it('returns null when no known tags are present', () => {
+        expect(extractReasoningTags('Just some thinking without tags')).toBeNull();
+    });
+
+    it('returns null for empty string', () => {
+        expect(extractReasoningTags('')).toBeNull();
+    });
+
+    it('returns null for null/undefined', () => {
+        expect(extractReasoningTags(null)).toBeNull();
+        expect(extractReasoningTags(undefined)).toBeNull();
+    });
+
+    it('ignores unknown tags', () => {
+        const reasoning = '<custom_tag>data</custom_tag> <society>Test</society>';
+        const result = extractReasoningTags(reasoning);
+        expect(result).toContain('<society>Test</society>');
+        expect(result).not.toContain('custom_tag');
+    });
+
+    it('handles multiline tag content', () => {
+        const reasoning = '<society>\nStructure: Patriarchal\n\nGuidelines:\n- Male-dominated\n</society>';
+        const result = extractReasoningTags(reasoning);
+        expect(result).toContain('Guidelines:');
+        expect(result).toContain('Male-dominated');
+    });
+
+    it('is case-insensitive', () => {
+        const reasoning = '<SOCIETY>Upper</SOCIETY> <Society>Mixed</Society>';
+        const result = extractReasoningTags(reasoning);
+        expect(result).toContain('Upper');
+        expect(result).toContain('Mixed');
+    });
+});
+
+// ─── truncateReasoning ──────────────────────────────────────────────
+
+describe('truncateReasoning', () => {
+    it('returns text unchanged when under limit', () => {
+        expect(truncateReasoning('short text', 1000)).toBe('short text');
+    });
+
+    it('truncates long text, keeping the tail', () => {
+        const text = 'A'.repeat(100) + 'IMPORTANT';
+        const result = truncateReasoning(text, 20);
+        expect(result).toContain('IMPORTANT');
+        expect(result.startsWith('...')).toBe(true);
+        expect(result.length).toBeLessThanOrEqual(23); // 3 for '...' + 20
+    });
+
+    it('returns empty string for null/undefined', () => {
+        expect(truncateReasoning(null, 1000)).toBe('');
+        expect(truncateReasoning(undefined, 1000)).toBe('');
+    });
+
+    it('returns empty string for empty input', () => {
+        expect(truncateReasoning('', 1000)).toBe('');
+    });
+
+    it('returns exact text when length equals limit', () => {
+        const text = 'A'.repeat(100);
+        expect(truncateReasoning(text, 100)).toBe(text);
+    });
+});
+
+// ─── buildAiRefinePrompt with reasoning ─────────────────────────────
+
+describe('buildAiRefinePrompt with reasoning context', () => {
+    it('includes extracted tags when reasoningContext is enabled in tags mode', () => {
+        const settings = {
+            ...baseSettings,
+            reasoningContext: true,
+            reasoningContextMode: 'tags',
+        };
+        const chat = makeChat([{ is_user: false, mes: 'Test.' }]);
+        const reasoning = 'Thinking... <society>\nStructure: Patriarchal\n</society> done.';
+        const { promptText } = buildAiRefinePrompt(
+            settings, makeContext(), chat, 0, 'Test.',
+            { rulesText: '1. Rule.', systemPrompt: DEFAULT_SYSTEM_PROMPT, reasoning },
+        );
+        expect(promptText).toContain('Scene settings (from model reasoning)');
+        expect(promptText).toContain('<society>');
+        expect(promptText).toContain('Patriarchal');
+    });
+
+    it('omits reasoning block when reasoningContext is disabled', () => {
+        const settings = {
+            ...baseSettings,
+            reasoningContext: false,
+        };
+        const chat = makeChat([{ is_user: false, mes: 'Test.' }]);
+        const reasoning = '<society>Patriarchal</society>';
+        const { promptText } = buildAiRefinePrompt(
+            settings, makeContext(), chat, 0, 'Test.',
+            { rulesText: '1. Rule.', systemPrompt: DEFAULT_SYSTEM_PROMPT, reasoning },
+        );
+        expect(promptText).not.toContain('Scene settings');
+        expect(promptText).not.toContain('society');
+    });
+
+    it('falls back to raw when tags mode finds no tags and fallback is enabled', () => {
+        const settings = {
+            ...baseSettings,
+            reasoningContext: true,
+            reasoningContextMode: 'tags',
+            reasoningContextRawFallback: true,
+            reasoningContextChars: 500,
+        };
+        const chat = makeChat([{ is_user: false, mes: 'Test.' }]);
+        const reasoning = 'No structured tags here, just plain reasoning about the scene.';
+        const { promptText } = buildAiRefinePrompt(
+            settings, makeContext(), chat, 0, 'Test.',
+            { rulesText: '1. Rule.', systemPrompt: DEFAULT_SYSTEM_PROMPT, reasoning },
+        );
+        expect(promptText).toContain('Scene settings (from model reasoning)');
+        expect(promptText).toContain('plain reasoning');
+    });
+
+    it('does not fall back to raw when fallback is disabled', () => {
+        const settings = {
+            ...baseSettings,
+            reasoningContext: true,
+            reasoningContextMode: 'tags',
+            reasoningContextRawFallback: false,
+        };
+        const chat = makeChat([{ is_user: false, mes: 'Test.' }]);
+        const reasoning = 'No structured tags here.';
+        const { promptText } = buildAiRefinePrompt(
+            settings, makeContext(), chat, 0, 'Test.',
+            { rulesText: '1. Rule.', systemPrompt: DEFAULT_SYSTEM_PROMPT, reasoning },
+        );
+        expect(promptText).not.toContain('Scene settings');
+    });
+
+    it('uses raw mode when explicitly set', () => {
+        const settings = {
+            ...baseSettings,
+            reasoningContext: true,
+            reasoningContextMode: 'raw',
+            reasoningContextChars: 500,
+        };
+        const chat = makeChat([{ is_user: false, mes: 'Test.' }]);
+        const reasoning = 'Raw reasoning content here.';
+        const { promptText } = buildAiRefinePrompt(
+            settings, makeContext(), chat, 0, 'Test.',
+            { rulesText: '1. Rule.', systemPrompt: DEFAULT_SYSTEM_PROMPT, reasoning },
+        );
+        expect(promptText).toContain('Scene settings (from model reasoning)');
+        expect(promptText).toContain('Raw reasoning content');
+    });
+
+    it('omits reasoning block when reasoning string is empty', () => {
+        const settings = {
+            ...baseSettings,
+            reasoningContext: true,
+            reasoningContextMode: 'raw',
+        };
+        const chat = makeChat([{ is_user: false, mes: 'Test.' }]);
+        const { promptText } = buildAiRefinePrompt(
+            settings, makeContext(), chat, 0, 'Test.',
+            { rulesText: '1. Rule.', systemPrompt: DEFAULT_SYSTEM_PROMPT, reasoning: '' },
+        );
+        expect(promptText).not.toContain('Scene settings');
     });
 });

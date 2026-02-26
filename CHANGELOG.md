@@ -4,6 +4,18 @@ All notable user-facing changes to ReDraft are documented here.
 
 ---
 
+## 2.5.0
+
+**Reasoning Context** — ReDraft can now read the generating model's Chain of Thought to extract scene settings.
+
+- **New setting: Include reasoning context** — when enabled, ReDraft reads the collapsed thinking/reasoning content from the message being refined.
+- **Tag extraction mode** (default) — pulls structured XML tags (`<society>`, `<power_dynamic>`, `<conviction>`, `<language_output>`) from the reasoning and passes them as scene context to the refinement LLM. Token-efficient.
+- **Raw pass-through mode** — passes truncated reasoning text for non-structured CoT. Configurable character limit (500–4000).
+- **Fallback option** — in tag extraction mode, automatically falls back to raw pass-through if no structured tags are found.
+- New settings UI controls with show/hide behavior when the feature is toggled.
+
+---
+
 ## 2.4.1
 
 ### Fixes
