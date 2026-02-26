@@ -14,8 +14,8 @@ const { getUserId, getConfigPath: _getConfigPath, maskKey, validateApiUrl, sanit
 const CONFIG_DIR = __dirname;
 const MODULE_NAME = 'redraft';
 /** Server plugin version (semver). Bump when releasing server-plugin changes; client shows this in settings. */
-const SERVER_PLUGIN_VERSION = '1.1.1';
-const REQUEST_TIMEOUT_MS = 60000;
+const SERVER_PLUGIN_VERSION = '1.2.0';
+const REQUEST_TIMEOUT_MS = 120_000;
 const MAX_BODY_SIZE_BYTES = 512 * 1024; // 512 KB
 const MAX_LLM_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 2000;
@@ -342,6 +342,7 @@ async function init(router) {
      */
     router.post('/refine', async (req, res) => {
         let config = null;
+        let timeoutMs = REQUEST_TIMEOUT_MS;
         const sendJson = (status, body) => {
             if (!res.headersSent) {
                 try { res.status(status).json(body); } catch (e) {
@@ -356,10 +357,14 @@ async function init(router) {
                 return res.status(413).json({ error: 'Request body too large' });
             }
 
-            const { messages } = body;
+            const { messages, timeout: requestedTimeout } = body;
             if (!Array.isArray(messages) || messages.length === 0) {
                 return res.status(400).json({ error: 'messages must be a non-empty array' });
             }
+
+            timeoutMs = (requestedTimeout && Number(requestedTimeout) >= 15 && Number(requestedTimeout) <= 300)
+                ? Number(requestedTimeout) * 1000
+                : REQUEST_TIMEOUT_MS;
 
             for (const msg of messages) {
                 if (!msg.role || typeof msg.role !== 'string') {
@@ -389,7 +394,7 @@ async function init(router) {
 
             for (let attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
                 const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+                const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
                 try {
                     response = await fetch(endpoint, {
@@ -459,8 +464,8 @@ async function init(router) {
         } catch (err) {
             if (err.name === 'AbortError') {
                 const model = config?.model || 'unknown';
-                console.error(`[${MODULE_NAME}] LLM request timed out after ${REQUEST_TIMEOUT_MS}ms for model "${model}"`);
-                sendJson(504, { error: `LLM request timed out after ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s for model "${model}". The model may be overloaded — try again or use a faster model.` });
+                console.error(`[${MODULE_NAME}] LLM request timed out after ${timeoutMs}ms for model "${model}"`);
+                sendJson(504, { error: `LLM request timed out after ${Math.round(timeoutMs / 1000)}s for model "${model}". The model may be overloaded — try increasing the timeout in ReDraft's Advanced settings, or use a faster model.` });
                 return;
             }
             const safeMsg = sanitizeError(err.message, config);

@@ -382,6 +382,64 @@ describe('POST /refine', () => {
         expect(res._status).toBe(200);
         expect(res._body.text).toBe('Refined text here.');
     });
+
+    it('uses client-provided timeout when valid', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        let usedTimeoutMs;
+        const realSetTimeout = globalThis.setTimeout;
+        vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn, ms) => {
+            if (typeof ms === 'number' && ms >= 15_000) usedTimeoutMs = ms;
+            return realSetTimeout(fn, 0);
+        });
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+                choices: [{ message: { content: 'ok' } }],
+            }),
+        }));
+        const res = createMockRes();
+        await routes.post['/refine']({
+            headers: {},
+            body: { messages: [{ role: 'user', content: 'hello' }], timeout: 30 },
+        }, res);
+        expect(usedTimeoutMs).toBe(30_000);
+        expect(res._status).toBe(200);
+    });
+
+    it('ignores out-of-range client timeout and uses default', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        let usedTimeoutMs;
+        const realSetTimeout = globalThis.setTimeout;
+        vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn, ms) => {
+            if (typeof ms === 'number' && ms >= 15_000) usedTimeoutMs = ms;
+            return realSetTimeout(fn, 0);
+        });
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+                choices: [{ message: { content: 'ok' } }],
+            }),
+        }));
+        const res = createMockRes();
+        await routes.post['/refine']({
+            headers: {},
+            body: { messages: [{ role: 'user', content: 'hello' }], timeout: 999 },
+        }, res);
+        expect(usedTimeoutMs).toBe(120_000);
+        expect(res._status).toBe(200);
+    });
 });
 
 // ─── GET /models ────────────────────────────────────────────────────

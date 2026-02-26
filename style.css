@@ -454,8 +454,7 @@
 
 .mes_button.redraft-msg-btn.redraft-loading,
 .mes_button.redraft-enhance-btn.redraft-loading {
-    pointer-events: none;
-    opacity: 0.5;
+    opacity: 0.7;
 }
 
 /* Undo button — inherits .mes_button */

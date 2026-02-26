@@ -160,8 +160,9 @@ describe('categorizeRefinementError', () => {
     });
 
     it('categorizes timeout errors', () => {
-        const result = categorizeRefinementError('Request timed out after 60s');
+        const result = categorizeRefinementError('Request timed out after 120s');
         expect(result.toastMessage).toContain('timed out');
+        expect(result.toastMessage).toContain('Advanced settings');
         expect(result.timeOut).toBe(8000);
     });
 

@@ -4,6 +4,17 @@ All notable user-facing changes to ReDraft are documented here.
 
 ---
 
+## 2.3.0
+
+**Configurable Timeout & Stop Drafting** — better support for thinking models and slow APIs.
+
+- **Configurable request timeout** in Advanced settings — choose 60s, 90s, 120s, 180s, or 300s depending on your model. Default is 120s, up from the previous hard-coded 60s.
+- **Stop drafting** — click the message button or the floating popout trigger while a refinement is in progress to cancel it immediately.
+- Timeout error messages now suggest adjusting the timeout setting instead of just retrying.
+- (Server plugin update required)
+
+---
+
 ## 2.2.2
 
 ### Fixes

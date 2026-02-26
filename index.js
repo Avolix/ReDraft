@@ -33,7 +33,7 @@ import {
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
-const EXTENSION_VERSION = '2.2.2';
+const EXTENSION_VERSION = '2.3.0';
 
 /**
  * Base URL path for the ReDraft server plugin API. Thin adapter over the
@@ -86,6 +86,7 @@ const defaultSettings = Object.freeze({
     protectFontTags: false,
     notificationSoundEnabled: false,
     notificationSoundUrl: '', // '' = built-in beep; or URL / data URL for custom
+    requestTimeoutSeconds: 120,
 });
 
 // POV_INSTRUCTIONS imported from ./lib/prompt-builder.js
@@ -176,9 +177,17 @@ function getUserPersonaDescription() {
 // ─── State ──────────────────────────────────────────────────────────
 
 let isRefining = false; // Re-entrancy guard
+let activeAbortController = null; // AbortController for the in-flight refinement request
 let pluginAvailable = false; // Whether server plugin is reachable
 let eventListenerRefs = {}; // For cleanup
 let _popoutOutsideClickRef = null; // Ref to the click-outside listener for cleanup
+
+function cancelRedraft() {
+    if (activeAbortController) {
+        activeAbortController.abort();
+        activeAbortController = null;
+    }
+}
 
 /**
  * Hide the popout panel and clean up the click-outside listener.
@@ -316,7 +325,7 @@ function playNotificationSound() {
  * multi-user instances treat the request as the current user and don't return a login page.
  * Handles HTML responses (e.g. 404/login pages) with a clear error instead of "is not valid JSON".
  */
-async function pluginRequest(endpoint, method = 'GET', body = null) {
+async function pluginRequest(endpoint, method = 'GET', body = null, { signal } = {}) {
     const { getRequestHeaders } = SillyTavern.getContext();
     const options = {
         method,
@@ -325,6 +334,9 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
     };
     if (body) {
         options.body = JSON.stringify(body);
+    }
+    if (signal) {
+        options.signal = signal;
     }
     const base = getPluginBaseUrl();
     const url = `${base}${endpoint}`;
@@ -344,7 +356,7 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
                 /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(window.location.origin);
             let hint = '';
             if (response.status === 502) {
-                hint = ' 502 Bad Gateway — your reverse proxy may have timed out before ST could respond. Check the SillyTavern terminal for the real error. If you use Caddy/nginx, increase the proxy timeout to at least 90s.';
+                hint = ' 502 Bad Gateway — your reverse proxy may have timed out before ST could respond. Check the SillyTavern terminal for the real error. If you use Caddy/nginx, increase the proxy timeout to at least 180s (thinking models can be slow).';
             } else if (response.status === 401 || response.status === 403 || response.redirected) {
                 hint = ' The server returned a login/auth page — refresh the page and try again. On multi-user instances, your session may have expired.';
             } else if (response.status === 404) {
@@ -529,13 +541,17 @@ function updateEnhanceModeUI(mode) {
 /**
  * Send refinement request via ST's generateRaw().
  */
-async function refineViaST(promptText, systemPrompt) {
+async function refineViaST(promptText, systemPrompt, { signal } = {}) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
     const { generateRaw } = SillyTavern.getContext();
     if (typeof generateRaw !== 'function') {
         throw new Error('generateRaw is not available in this version of SillyTavern');
     }
 
     const result = await generateRaw({ prompt: promptText, systemPrompt: systemPrompt });
+
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
     if (!result || typeof result !== 'string' || !result.trim()) {
         throw new Error('ST generated an empty response');
@@ -547,13 +563,14 @@ async function refineViaST(promptText, systemPrompt) {
 /**
  * Send refinement request via server plugin.
  */
-async function refineViaPlugin(promptText, systemPrompt) {
+async function refineViaPlugin(promptText, systemPrompt, { signal } = {}) {
     const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: promptText },
     ];
 
-    const result = await pluginRequest('/refine', 'POST', { messages });
+    const timeout = getSettings().requestTimeoutSeconds ?? 120;
+    const result = await pluginRequest('/refine', 'POST', { messages, timeout }, { signal });
 
     if (!result.text || !result.text.trim()) {
         throw new Error('Plugin returned an empty response');
@@ -581,7 +598,7 @@ function buildUserEnhancePrompt(settings, context, chatArray, messageIndex, stri
  */
 async function redraftMessage(messageIndex) {
     if (isRefining) {
-        console.debug(`${LOG_PREFIX} Already refining, skipping`);
+        cancelRedraft();
         return;
     }
 
@@ -612,8 +629,10 @@ async function redraftMessage(messageIndex) {
         return;
     }
 
-    // Set re-entrancy guard and start timer for floating-button display
+    // Set re-entrancy guard, create abort controller, and start timer
     isRefining = true;
+    activeAbortController = new AbortController();
+    const { signal } = activeAbortController;
     const refineStartTime = Date.now();
     setPopoutTriggerLoading(true);
 
@@ -663,9 +682,9 @@ async function redraftMessage(messageIndex) {
         // Call refinement via the appropriate mode
         let refinedText;
         if (settings.connectionMode === 'plugin') {
-            refinedText = await refineViaPlugin(promptText, systemPrompt);
+            refinedText = await refineViaPlugin(promptText, systemPrompt, { signal });
         } else {
-            refinedText = await refineViaST(promptText, systemPrompt);
+            refinedText = await refineViaST(promptText, systemPrompt, { signal });
         }
 
         // Parse changelog from response
@@ -705,11 +724,16 @@ async function redraftMessage(messageIndex) {
         console.log(`${LOG_PREFIX} Message ${messageIndex} refined successfully (mode: ${settings.connectionMode}) in ${(refineMs / 1000).toFixed(1)}s`);
 
     } catch (err) {
-        console.error(`${LOG_PREFIX} Refinement failed:`, err.message);
-        const { toastMessage, timeOut } = categorizeRefinementError(err.message);
-        toastr.error(toastMessage, 'ReDraft', { timeOut });
+        if (err.name === 'AbortError') {
+            toastr.info('Drafting stopped', 'ReDraft');
+        } else {
+            console.error(`${LOG_PREFIX} Refinement failed:`, err.message);
+            const { toastMessage, timeOut } = categorizeRefinementError(err.message);
+            toastr.error(toastMessage, 'ReDraft', { timeOut });
+        }
     } finally {
         isRefining = false;
+        activeAbortController = null;
         setMessageButtonLoading(messageIndex, false);
         // Only clear loading here on failure; success path already called setPopoutTriggerLoading(false, refineMs)
         if (!refineSucceeded) {
@@ -817,7 +841,8 @@ function setMessageButtonLoading(messageIndex, loading) {
     const isEnhance = btn.classList.contains('redraft-enhance-btn');
     if (loading) {
         btn.classList.add('redraft-loading');
-        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        btn.innerHTML = '<i class="fa-solid fa-circle-stop"></i>';
+        btn.title = 'Stop drafting';
     } else {
         btn.classList.remove('redraft-loading');
         btn.innerHTML = isEnhance
@@ -839,6 +864,7 @@ function setPopoutTriggerLoading(loading, lastDurationMs) {
         trigger.classList.add('redraft-refining');
         trigger.classList.remove('redraft-show-duration');
         trigger.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        trigger.title = 'Click to stop drafting';
     } else {
         trigger.classList.remove('redraft-refining');
         if (typeof lastDurationMs === 'number' && lastDurationMs >= 0) {
@@ -1045,6 +1071,11 @@ function createPopoutTrigger() {
 }
 
 function togglePopout() {
+    if (isRefining) {
+        cancelRedraft();
+        return;
+    }
+
     const panel = document.getElementById('redraft_popout_panel');
     if (!panel) return;
     const isVisible = panel.style.display !== 'none';
@@ -1557,6 +1588,17 @@ function bindSettingsUI() {
         prevTailEl.value = String([100, 200, 400].includes(val) ? val : 200);
         prevTailEl.addEventListener('change', (e) => {
             getSettings().previousResponseTailChars = parseInt(e.target.value, 10);
+            saveSettings();
+        });
+    }
+
+    // Request timeout
+    const timeoutEl = document.getElementById('redraft_request_timeout');
+    if (timeoutEl) {
+        const val = initSettings.requestTimeoutSeconds ?? 120;
+        timeoutEl.value = String([60, 90, 120, 180, 300].includes(val) ? val : 120);
+        timeoutEl.addEventListener('change', (e) => {
+            getSettings().requestTimeoutSeconds = parseInt(e.target.value, 10);
             saveSettings();
         });
     }
@@ -2626,6 +2668,17 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                             <option value="200">200</option>
                             <option value="400">400</option>
                         </select>
+                    </div>
+                    <div class="redraft-form-group">
+                        <label for="redraft_request_timeout">Request timeout (seconds)</label>
+                        <select id="redraft_request_timeout">
+                            <option value="60">60</option>
+                            <option value="90">90</option>
+                            <option value="120">120</option>
+                            <option value="180">180</option>
+                            <option value="300">300</option>
+                        </select>
+                        <small class="redraft-hint">How long to wait for the LLM to respond. Increase for thinking models.</small>
                     </div>
                     <label class="checkbox_label">
                         <input type="checkbox" id="redraft_protect_font_tags" />
