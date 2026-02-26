@@ -10,29 +10,73 @@
 const path = require('path');
 const fs = require('fs');
 
-const CONFIG_PATH = path.join(__dirname, 'config.json');
+const CONFIG_DIR = __dirname;
 const MODULE_NAME = 'redraft';
 const REQUEST_TIMEOUT_MS = 30000;
 const MAX_BODY_SIZE_BYTES = 512 * 1024; // 512 KB
 
-let cachedConfig = null;
+/** Per-user config cache: key is userId string or '__shared' for single-user. */
+const configCache = new Map();
 
 /**
- * Read and cache config from disk.
+ * Get the current user id from the request when running in multi-user ST.
+ * SillyTavern may set req.session.userId, req.user.id, or similar when enableUserAccounts is true.
+ * @param {import('express').Request} req
+ * @returns {string|null} Sanitized user id for config filename, or null for shared config.
+ */
+function getUserId(req) {
+    if (!req) return null;
+    const raw = (req.session && (req.session.userId ?? req.session.user_id))
+        || (req.user && (req.user.id ?? req.user.userId))
+        || (req.headers && (req.headers['x-user-id'] || req.headers['x-user_id']));
+    if (raw == null || typeof raw !== 'string') return null;
+    const sanitized = String(raw).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    return sanitized.length > 0 ? sanitized : null;
+}
+
+/**
+ * Config file path for a user (or shared config when userId is null).
+ * @param {string|null} userId
+ * @returns {string}
+ */
+function getConfigPath(userId) {
+    const filename = userId ? `config.${userId}.json` : 'config.json';
+    return path.join(CONFIG_DIR, filename);
+}
+
+/**
+ * Read and cache config from disk for the given user.
+ * @param {string|null} userId
  * @returns {object|null} The config object or null if not configured.
  */
-function readConfig() {
+function readConfigForUser(userId) {
+    const cacheKey = userId ?? '__shared';
+    const cached = configCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
+    const configPath = getConfigPath(userId);
     try {
-        if (!fs.existsSync(CONFIG_PATH)) {
+        if (!fs.existsSync(configPath)) {
+            configCache.set(cacheKey, null);
             return null;
         }
-        const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
-        cachedConfig = JSON.parse(raw);
-        return cachedConfig;
+        const raw = fs.readFileSync(configPath, 'utf-8');
+        const config = JSON.parse(raw);
+        configCache.set(cacheKey, config);
+        return config;
     } catch (err) {
-        console.error(`[${MODULE_NAME}] Failed to read config:`, err.message);
+        console.error(`[${MODULE_NAME}] Failed to read config for ${cacheKey}:`, err.message);
+        configCache.set(cacheKey, null);
         return null;
     }
+}
+
+/**
+ * Legacy single-config read for file watcher and initial load (shared config only).
+ * @returns {object|null}
+ */
+function readConfig() {
+    return readConfigForUser(null);
 }
 
 /**
@@ -98,10 +142,10 @@ function validateApiUrl(urlString) {
 /**
  * Sanitize error messages to strip any credential fragments.
  * @param {string} message
+ * @param {object|null} [config] Config object whose apiKey to redact (optional, for per-request safety).
  * @returns {string}
  */
-function sanitizeError(message) {
-    const config = cachedConfig;
+function sanitizeError(message, config) {
     if (config && config.apiKey && message.includes(config.apiKey)) {
         message = message.replace(new RegExp(config.apiKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '[REDACTED]');
     }
@@ -174,20 +218,21 @@ async function init(router) {
 
     readConfig();
 
-    const configDir = path.dirname(CONFIG_PATH);
-    fs.watch(configDir, (eventType, filename) => {
-        if (filename === 'config.json') {
-            console.log(`[${MODULE_NAME}] Config file changed, reloading...`);
-            readConfig();
+    fs.watch(CONFIG_DIR, (eventType, filename) => {
+        if (filename && (filename === 'config.json' || filename.startsWith('config.') && filename.endsWith('.json'))) {
+            const userId = filename === 'config.json' ? '__shared' : filename.slice(7, -5);
+            configCache.delete(userId);
+            console.log(`[${MODULE_NAME}] Config file changed (${filename}), cache invalidated.`);
         }
     });
 
     /**
-     * POST /config — Save API credentials to disk.
+     * POST /config — Save API credentials to disk (per-user in multi-user mode).
      * Accepts: { apiUrl, apiKey, model, maxTokens? }
      */
     router.post('/config', (req, res) => {
         try {
+            const userId = getUserId(req);
             const { apiUrl, apiKey, model, maxTokens } = req.body;
 
             if (!apiUrl || typeof apiUrl !== 'string' || !apiUrl.trim()) {
@@ -203,8 +248,7 @@ async function init(router) {
                 return res.status(400).json({ error: 'model is required and must be a non-empty string' });
             }
 
-            // If no new key was sent, reuse the saved one (allows changing model without re-entering key)
-            const existingConfig = readConfig();
+            const existingConfig = readConfigForUser(userId);
             const resolvedKey = (apiKey && typeof apiKey === 'string' && apiKey.trim())
                 ? apiKey.trim()
                 : existingConfig?.apiKey;
@@ -220,10 +264,11 @@ async function init(router) {
                 maxTokens: Math.min(Math.max(Number(maxTokens) || 4096, 1), 128000),
             };
 
-            fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
-            cachedConfig = config;
+            const configPath = getConfigPath(userId);
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
+            configCache.set(userId ?? '__shared', config);
 
-            console.log(`[${MODULE_NAME}] Config saved successfully`);
+            console.log(`[${MODULE_NAME}] Config saved successfully${userId ? ` for user ${userId}` : ''}`);
             return res.json({ ok: true });
         } catch (err) {
             console.error(`[${MODULE_NAME}] Error saving config:`, err.message);
@@ -232,10 +277,11 @@ async function init(router) {
     });
 
     /**
-     * GET /status — Return plugin status (no secrets exposed).
+     * GET /status — Return plugin status (no secrets exposed). Per-user in multi-user mode.
      */
     router.get('/status', (req, res) => {
-        const config = readConfig();
+        const userId = getUserId(req);
+        const config = readConfigForUser(userId);
         if (!config || !config.apiKey || !config.apiUrl) {
             return res.json({
                 configured: false,
@@ -259,7 +305,8 @@ async function init(router) {
      */
     router.get('/models', async (req, res) => {
         try {
-            const config = readConfig();
+            const userId = getUserId(req);
+            const config = readConfigForUser(userId);
             if (!config || !config.apiKey || !config.apiUrl) {
                 return res.status(503).json({ error: 'Not configured. Save API credentials first.' });
             }
@@ -296,13 +343,13 @@ async function init(router) {
             if (err.name === 'AbortError') {
                 return res.status(504).json({ error: 'Models request timed out' });
             }
-            console.error(`[${MODULE_NAME}] Models fetch error:`, sanitizeError(err.message));
+            console.error(`[${MODULE_NAME}] Models fetch error:`, sanitizeError(err.message, config));
             return res.status(500).json({ error: 'Failed to fetch models' });
         }
     });
 
     /**
-     * POST /refine — Proxy refinement request to configured LLM.
+     * POST /refine — Proxy refinement request to configured LLM. Per-user config in multi-user mode.
      * Accepts: { messages: [{role, content}] }
      * Returns: { text: string }
      */
@@ -327,7 +374,8 @@ async function init(router) {
                 }
             }
 
-            const config = readConfig();
+            const userId = getUserId(req);
+            const config = readConfigForUser(userId);
             if (!config || !config.apiKey || !config.apiUrl) {
                 return res.status(503).json({ error: 'ReDraft is not configured. Please set up API credentials.' });
             }
@@ -358,7 +406,7 @@ async function init(router) {
             const rawBody = await response.text();
 
             if (!response.ok) {
-                const sanitized = sanitizeError(rawBody);
+                const sanitized = sanitizeError(rawBody, config);
                 console.error(`[${MODULE_NAME}] LLM API error (${response.status}):`, sanitized);
                 return res.status(502).json({ error: `LLM API returned ${response.status}: ${sanitized.slice(0, 200)}` });
             }
@@ -388,12 +436,13 @@ async function init(router) {
                 console.error(`[${MODULE_NAME}] LLM request timed out after ${REQUEST_TIMEOUT_MS}ms`);
                 return res.status(504).json({ error: 'LLM request timed out' });
             }
-            console.error(`[${MODULE_NAME}] Refine error:`, sanitizeError(err.message));
+            console.error(`[${MODULE_NAME}] Refine error:`, sanitizeError(err.message, config));
             return res.status(500).json({ error: 'Internal error during refinement' });
         }
     });
 
-    console.log(`[${MODULE_NAME}] Plugin loaded. Config ${cachedConfig ? 'found' : 'not found — configure via UI'}.`);
+    const hasAnyConfig = fs.readdirSync(CONFIG_DIR).some(f => f.startsWith('config') && f.endsWith('.json'));
+    console.log(`[${MODULE_NAME}] Plugin loaded. Multi-user config supported. ${hasAnyConfig ? 'Config file(s) present.' : 'No config yet — configure via UI.'}`);
 }
 
 async function exit() {

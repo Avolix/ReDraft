@@ -91,9 +91,11 @@ Credentials are saved on the server (in the plugin’s `config.json`), not in th
 If you run SillyTavern with **multi-user mode** (`enableUserAccounts: true`):
 
 - **ReDraft extension settings** (rules, notification sound, PoV, etc.) are **per user** — each user has their own, as with other ST extension and UI settings.
-- **Separate LLM (server plugin) credentials** are **shared for the whole server**. The plugin has a single `config.json` in `plugins/redraft/`. Whoever saves API URL, Key, and Model last overwrites for everyone; all users then use that same key and model for refinement when they choose "Separate LLM" in ReDraft.
+- **Separate LLM (server plugin) credentials** support **per-user config**: the plugin stores credentials in `config.<userId>.json` when SillyTavern passes the current user to the plugin (e.g. via session). Each user can save their own API URL, Key, and Model without affecting others. If the server does not pass user context to plugin routes, a single `config.json` is used (shared by all users).
 
-So in a multi-user setup, either accept one shared refinement API/model for all users, or have each user use **Use current ST connection** instead of Separate LLM so they each use their own ST API and model.
+**After updating:** Re-run the server plugin installer and restart SillyTavern so the multi-user plugin code is in place. Existing `config.json` continues to work as the shared fallback; per-user configs are created when each user saves their connection in ReDraft settings.
+
+**Shared chats:** ReDraft stores undo/diff data in chat metadata. If multiple users refine messages in the same chat, that metadata is shared with the chat; avoid editing the same chat from two accounts if you need separate undo/diff history.
 
 ---
 

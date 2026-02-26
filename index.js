@@ -2024,7 +2024,7 @@ function registerSlashCommand() {
                         Use a different API/model for refinement (e.g. a faster or cheaper model). One-time plugin install required — see install instructions below.
                     </p>
                     <p id="redraft_multiuser_hint" class="redraft-section-hint" style="display: none; margin-top: 4px;">
-                        In multi-user setups, Separate LLM credentials are shared for all users (one config per server).
+                        In multi-user setups, each user can have their own Separate LLM credentials (per-user config). If your ST instance does not pass user context to plugins, a single shared config is used.
                     </p>
 
                     <!-- Banner: ST mode, plugin not installed (nudge) -->
