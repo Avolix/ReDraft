@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'module';
+import path from 'path';
 
 const require = createRequire(import.meta.url);
 const { getUserId, getConfigPath, maskKey, validateApiUrl, sanitizeError } = require('../server-plugin/lib/utils.js');
@@ -84,7 +85,7 @@ describe('getConfigPath', () => {
 
     it('uses the provided configDir', () => {
         const result = getConfigPath('/my/custom/path', null);
-        expect(result).toContain('/my/custom/path');
+        expect(result).toBe(path.join('/my/custom/path', 'config.json'));
     });
 });
 

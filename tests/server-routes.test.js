@@ -1,35 +1,17 @@
 /**
  * Integration tests for the server plugin's Express routes.
- * Uses a spy router to capture route handlers and mock req/res objects
- * instead of requiring express as a dependency.
  *
- * Each test initializes a fresh plugin instance via initPlugin() to ensure
- * the internal configCache starts clean.
+ * Uses vi.spyOn with selective pass-through: config-related fs calls are
+ * mocked while .js file reads (needed by require()) pass to the real fs.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-vi.mock('fs', async () => {
-    const actual = await vi.importActual('fs');
-    return {
-        ...actual,
-        existsSync: vi.fn(() => false),
-        readFileSync: vi.fn(),
-        writeFileSync: vi.fn(),
-        readdirSync: vi.fn(() => []),
-        statSync: vi.fn(),
-        watch: vi.fn(() => ({ close: vi.fn() })),
-        copyFileSync: vi.fn(),
-    };
-});
+import fs from 'fs';
 
 const require = createRequire(import.meta.url);
-const fs = require('fs');
-
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pluginPath = path.resolve(__dirname, '..', 'server-plugin', 'index.js');
 const utilsPath = path.resolve(__dirname, '..', 'server-plugin', 'lib', 'utils.js');
 
@@ -54,22 +36,41 @@ function createMockRes() {
 }
 
 /**
- * Initialize a fresh plugin instance with optional pre-loaded config.
- * Clears module cache so configCache starts empty, then sets up fs mocks
- * BEFORE calling init() so readConfig() caches the correct state.
+ * Initialize a fresh plugin instance with selective fs spies.
+ * Only config.json-related reads are mocked; .js file reads pass through
+ * so that require() still works.
  */
 async function initPlugin(configData = null) {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
 
-    fs.existsSync.mockReturnValue(!!configData);
-    fs.readdirSync.mockReturnValue(
-        configData ? ['config.json'] : [],
-    );
-    fs.watch.mockReturnValue({ close: vi.fn() });
-    fs.writeFileSync.mockReturnValue(undefined);
-    if (configData) {
-        fs.readFileSync.mockReturnValue(JSON.stringify(configData));
-    }
+    const realExistsSync = fs.existsSync;
+    const realReadFileSync = fs.readFileSync;
+    const realReaddirSync = fs.readdirSync;
+
+    vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
+        if (typeof p === 'string' && p.endsWith('.json') && path.basename(p).startsWith('config')) {
+            return !!configData;
+        }
+        return realExistsSync(p);
+    });
+
+    vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...args) => {
+        if (typeof p === 'string' && p.endsWith('.json') && path.basename(p).startsWith('config')) {
+            return configData ? JSON.stringify(configData) : '';
+        }
+        return realReadFileSync(p, ...args);
+    });
+
+    vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+
+    vi.spyOn(fs, 'readdirSync').mockImplementation((p, ...args) => {
+        if (typeof p === 'string' && p.includes('server-plugin')) {
+            return configData ? ['config.json'] : [];
+        }
+        return realReaddirSync(p, ...args);
+    });
+
+    vi.spyOn(fs, 'watch').mockReturnValue({ close: vi.fn() });
 
     delete require.cache[pluginPath];
     delete require.cache[utilsPath];
