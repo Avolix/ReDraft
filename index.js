@@ -22,7 +22,7 @@ import {
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
-const EXTENSION_VERSION = '2.1';
+const EXTENSION_VERSION = '2.2';
 
 /**
  * Base URL path for the ReDraft server plugin API. Thin adapter over the
@@ -43,7 +43,17 @@ const defaultSettings = Object.freeze({
     autoRefine: false,
     userEnhanceEnabled: true,
     userAutoEnhance: false,
+    userEnhanceMode: 'post', // 'pre' (intercept before generation) or 'post' (enhance after render)
     userSystemPrompt: '',
+    userBuiltInRules: {
+        grammar: true,
+        personaVoice: true,
+        prose: true,
+        formatting: true,
+        sceneContinuity: false,
+        expandBrevity: false,
+    },
+    userCustomRules: [],
     connectionMode: 'st', // 'st' or 'plugin'
     builtInRules: {
         grammar: true,
@@ -115,6 +125,33 @@ const BUILTIN_RULES = {
     lore: {
         label: 'Maintain lore consistency',
         prompt: 'Using the "Character" context provided above, flag only glaring contradictions with established character/world information. Examples: wrong eye color, wrong relationship status, referencing events that didn\'t happen, contradicting established abilities.\n\nDo not invent new lore. When uncertain, preserve the original phrasing rather than "correcting" it. Minor ambiguities are not errors.',
+    },
+};
+
+const BUILTIN_USER_RULES = {
+    grammar: {
+        label: 'Fix grammar & spelling',
+        prompt: 'Fix grammatical errors, spelling mistakes, and awkward phrasing. Preserve intentional dialect, slang, verbal tics, and character-specific speech patterns — only correct genuine errors. The user wrote this message in character; do not "correct" deliberate voice choices.',
+    },
+    personaVoice: {
+        label: 'Match persona voice',
+        prompt: 'Using the "Your character" context provided above, ensure the message\'s dialogue and narration match the user\'s character persona:\n1. Speech register: If the persona is casual, don\'t polish into formal prose. If the persona is eloquent, don\'t simplify.\n2. Vocabulary: Use words and expressions consistent with the character\'s background, education, and personality.\n3. Verbal tics and patterns: If the persona has established speech habits (contractions, sentence fragments, specific phrases), lean into them.\n4. Emotional expression: Match how this character would express the emotion — stoic characters understate, dramatic characters amplify.\n\nDo not invent new personality traits. Work with what the persona description establishes.',
+    },
+    prose: {
+        label: 'Improve prose',
+        prompt: 'Improve the user\'s prose while preserving their intent and meaning:\n1. Awkward phrasing: Smooth out clunky sentence constructions without changing the meaning.\n2. Vague descriptions: Where the user wrote something generic ("looked around the room"), suggest a more specific or vivid alternative that fits the scene.\n3. Passive voice: Convert unnecessary passive constructions to active voice when it improves clarity.\n4. Redundancy: Cut redundant phrases ("nodded his head," "shrugged her shoulders") to the cleaner form.\n\nDo NOT over-embellish. The user\'s brevity may be intentional. Improve clarity and vividness, not word count.',
+    },
+    formatting: {
+        label: 'Fix formatting',
+        prompt: 'Ensure consistent formatting within the message:\n1. Fix orphaned formatting marks (unclosed asterisks, mismatched quotes)\n2. Ensure consistent convention: *asterisks for actions/narration*, "quotes for dialogue" (or whatever convention the user established)\n3. Fix dialogue punctuation errors\n4. Ensure paragraph breaks are placed sensibly\n\nDo not change the user\'s chosen convention — only correct errors within it.',
+    },
+    sceneContinuity: {
+        label: 'Check scene continuity',
+        prompt: 'Using the "Last response" context provided above, check that the user\'s message is consistent with the established scene:\n1. Spatial continuity: If the last response placed characters in a specific location or position, does the user\'s action make physical sense?\n2. Object continuity: If the user references an object, was it established in the scene?\n3. Conversational continuity: If the user\'s dialogue responds to something, does it match what was actually said?\n\nOnly flag clear contradictions. Ambiguity is fine — the user may be intentionally advancing the scene. Fix only outright impossibilities.',
+    },
+    expandBrevity: {
+        label: 'Expand brief messages',
+        prompt: 'If the user\'s message is very brief (1-2 short sentences), expand it into a richer scene contribution while preserving the exact intent:\n1. Add sensory detail: What does the character see, hear, feel in this moment?\n2. Add body language: How does the character physically express the action or emotion?\n3. Add interiority: A brief thought or reaction that reveals character.\n\nIMPORTANT: Do NOT change the user\'s actions, dialogue, or decisions. Only add texture around what they wrote. If the message is already substantial (3+ sentences with detail), leave it as-is.',
     },
 };
 
@@ -268,6 +305,32 @@ function compileRules(settings) {
     }
     const compiled = _compileRules(settings, BUILTIN_RULES);
     console.debug(`${LOG_PREFIX} [rules] Compiled rules`);
+    return compiled;
+}
+
+/**
+ * Compile active user-enhance rules into a numbered list string.
+ * Delegates to lib/text-utils.js and adds debug logging.
+ */
+function compileUserRules(settings) {
+    for (const key of Object.keys(BUILTIN_USER_RULES)) {
+        const enabled = settings.userBuiltInRules?.[key];
+        console.debug(`${LOG_PREFIX} [user-rules] Built-in ${enabled ? 'ON' : 'OFF'}: ${key}`);
+    }
+    const customList = settings.userCustomRules || [];
+    for (let i = 0; i < customList.length; i++) {
+        const rule = customList[i];
+        if (rule.enabled && rule.text && rule.text.trim()) {
+            console.debug(`${LOG_PREFIX} [user-rules] Custom #${i} ON: "${rule.text.trim().substring(0, 80)}${rule.text.trim().length > 80 ? '…' : ''}"`);
+        } else {
+            console.debug(`${LOG_PREFIX} [user-rules] Custom #${i} SKIPPED (enabled=${rule.enabled}, text=${JSON.stringify(rule.text?.substring?.(0, 40) || rule.text)})`);
+        }
+    }
+    const compiled = _compileRules(settings, BUILTIN_USER_RULES, {
+        enabledMap: 'userBuiltInRules',
+        customKey: 'userCustomRules',
+    });
+    console.debug(`${LOG_PREFIX} [user-rules] Compiled user rules`);
     return compiled;
 }
 
@@ -500,6 +563,28 @@ function updateConnectionModeUI() {
     updatePluginBanner();
 }
 
+/**
+ * Show/hide the post-send options and hint based on the enhancement mode.
+ * @param {string} mode - 'pre' or 'post'
+ */
+function updateEnhanceModeUI(mode) {
+    const postSendOptions = document.getElementById('redraft_post_send_options');
+    const modeHint = document.getElementById('redraft_enhance_mode_hint');
+
+    if (postSendOptions) {
+        postSendOptions.style.display = mode === 'post' ? '' : 'none';
+    }
+    if (modeHint) {
+        if (mode === 'pre') {
+            modeHint.textContent = 'Your message will be enhanced before the AI sees it. Adds 2\u201310s before generation starts (use a fast model to minimize delay). Messages under 20 characters are sent as-is.';
+            modeHint.style.display = '';
+        } else {
+            modeHint.textContent = '';
+            modeHint.style.display = 'none';
+        }
+    }
+}
+
 // ─── Core Refinement (Dual-Mode) ────────────────────────────────────
 
 /**
@@ -603,8 +688,8 @@ async function redraftMessage(messageIndex) {
             protectFontTags: settings.protectFontTags,
         });
 
-        // Build the refinement prompt
-        const rulesText = compileRules(settings);
+        // Build the refinement prompt — user messages get their own rule set
+        const rulesText = isUserMessage ? compileUserRules(settings) : compileRules(settings);
 
         // Gather context for the LLM — different framing for user vs AI messages
         const contextParts = [];
@@ -1176,17 +1261,18 @@ async function updatePopoutStatus() {
 
 // ─── Custom Rules UI ────────────────────────────────────────────────
 
-function renderCustomRules() {
-    const container = document.getElementById('redraft_custom_rules_list');
+function renderCustomRules(settingsKey = 'customRules', containerId = 'redraft_custom_rules_list') {
+    const container = document.getElementById(containerId);
     const settings = getSettings();
-    console.debug(`${LOG_PREFIX} renderCustomRules: container found=${!!container}, rules count=${settings.customRules?.length}`);
+    const rules = settings[settingsKey] || [];
+    console.debug(`${LOG_PREFIX} renderCustomRules(${settingsKey}): container found=${!!container}, rules count=${rules.length}`);
     if (!container) return;
 
     const { DOMPurify } = SillyTavern.libs;
 
     container.innerHTML = '';
 
-    settings.customRules.forEach((rule, index) => {
+    rules.forEach((rule, index) => {
         const item = document.createElement('div');
         item.classList.add('redraft-custom-rule-item');
         item.dataset.index = index;
@@ -1199,37 +1285,38 @@ function renderCustomRules() {
         `;
 
         item.querySelector('.redraft-rule-toggle').addEventListener('change', (e) => {
-            getSettings().customRules[index].enabled = e.target.checked;
+            getSettings()[settingsKey][index].enabled = e.target.checked;
             saveSettings();
-            updateCustomRulesToggle();
+            updateCustomRulesToggle(settingsKey);
         });
 
         item.querySelector('.redraft-rule-text').addEventListener('input', (e) => {
-            getSettings().customRules[index].text = e.target.value;
+            getSettings()[settingsKey][index].text = e.target.value;
             saveSettings();
         });
 
         item.querySelector('.redraft-delete-rule').addEventListener('click', () => {
-            getSettings().customRules.splice(index, 1);
+            getSettings()[settingsKey].splice(index, 1);
             saveSettings();
-            renderCustomRules();
+            renderCustomRules(settingsKey, containerId);
         });
 
         container.appendChild(item);
     });
 
-    initDragReorder(container);
-    updateCustomRulesToggle();
+    initDragReorder(container, settingsKey, containerId);
+    updateCustomRulesToggle(settingsKey);
 }
 
 /**
  * Sync the master custom-rules toggle state.
  * Checked = all enabled, unchecked = all disabled, indeterminate = mixed.
  */
-function updateCustomRulesToggle() {
-    const toggle = document.getElementById('redraft_custom_rules_toggle');
+function updateCustomRulesToggle(settingsKey = 'customRules') {
+    const toggleId = settingsKey === 'userCustomRules' ? 'redraft_user_custom_rules_toggle' : 'redraft_custom_rules_toggle';
+    const toggle = document.getElementById(toggleId);
     if (!toggle) return;
-    const rules = getSettings().customRules;
+    const rules = getSettings()[settingsKey] || [];
     if (rules.length === 0) {
         toggle.checked = false;
         toggle.indeterminate = false;
@@ -1240,7 +1327,7 @@ function updateCustomRulesToggle() {
     toggle.indeterminate = enabledCount > 0 && enabledCount < rules.length;
 }
 
-function initDragReorder(container) {
+function initDragReorder(container, settingsKey = 'customRules', containerId = 'redraft_custom_rules_list') {
     let draggedItem = null;
 
     container.querySelectorAll('.drag-handle').forEach(handle => {
@@ -1280,10 +1367,11 @@ function initDragReorder(container) {
             const toIndex = parseInt(item.dataset.index, 10);
 
             const s = getSettings();
-            const [moved] = s.customRules.splice(fromIndex, 1);
-            s.customRules.splice(toIndex, 0, moved);
+            const rules = s[settingsKey] || [];
+            const [moved] = rules.splice(fromIndex, 1);
+            rules.splice(toIndex, 0, moved);
             saveSettings();
-            renderCustomRules();
+            renderCustomRules(settingsKey, containerId);
         });
     });
 }
@@ -1291,17 +1379,19 @@ function initDragReorder(container) {
 /**
  * Export custom rules as a JSON file download.
  */
-function exportCustomRules() {
+function exportCustomRules(settingsKey = 'customRules') {
     const settings = getSettings();
-    if (!settings.customRules || settings.customRules.length === 0) {
+    const rules = settings[settingsKey] || [];
+    if (rules.length === 0) {
         toastr.warning('No custom rules to export', 'ReDraft');
         return;
     }
 
+    const isUser = settingsKey === 'userCustomRules';
     const data = {
-        name: 'ReDraft Custom Rules',
+        name: isUser ? 'ReDraft User Enhance Rules' : 'ReDraft Custom Rules',
         version: 1,
-        rules: settings.customRules.map(r => ({
+        rules: rules.map(r => ({
             label: r.label || '',
             text: r.text || '',
             enabled: r.enabled !== false,
@@ -1312,7 +1402,7 @@ function exportCustomRules() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'redraft-rules.json';
+    a.download = isUser ? 'redraft-user-enhance-rules.json' : 'redraft-rules.json';
     a.click();
     URL.revokeObjectURL(url);
 
@@ -1323,18 +1413,17 @@ function exportCustomRules() {
  * Import custom rules from a JSON file.
  * @param {File} file
  */
-async function importCustomRules(file) {
+async function importCustomRules(file, settingsKey = 'customRules') {
+    const containerId = settingsKey === 'userCustomRules' ? 'redraft_user_custom_rules_list' : 'redraft_custom_rules_list';
     try {
         const text = await file.text();
         const data = JSON.parse(text);
 
-        // Validate
         if (!data.rules || !Array.isArray(data.rules) || data.rules.length === 0) {
             toastr.error('Invalid file: must contain a non-empty "rules" array', 'ReDraft');
             return;
         }
 
-        // Parse valid rules, skip empty ones
         const importedRules = data.rules
             .filter(r => r && typeof r.text === 'string' && r.text.trim())
             .map(r => ({
@@ -1350,28 +1439,28 @@ async function importCustomRules(file) {
 
         const ruleName = data.name || file.name.replace(/\.json$/i, '');
 
-        // Prompt user: Append or Replace
         const s = getSettings();
-        const hasExisting = s.customRules.length > 0;
+        if (!s[settingsKey]) s[settingsKey] = [];
+        const hasExisting = s[settingsKey].length > 0;
 
         if (hasExisting) {
             const replace = confirm(
                 `Import "${ruleName}" (${importedRules.length} rules)?\n\n` +
-                `OK = Replace existing ${s.customRules.length} rules\n` +
+                `OK = Replace existing ${s[settingsKey].length} rules\n` +
                 `Cancel = Append after existing rules`
             );
 
             if (replace) {
-                s.customRules = importedRules;
+                s[settingsKey] = importedRules;
             } else {
-                s.customRules.push(...importedRules);
+                s[settingsKey].push(...importedRules);
             }
         } else {
-            s.customRules = importedRules;
+            s[settingsKey] = importedRules;
         }
 
         saveSettings();
-        renderCustomRules();
+        renderCustomRules(settingsKey, containerId);
         toastr.success(`Imported ${importedRules.length} rules from "${ruleName}"`, 'ReDraft');
 
     } catch (err) {
@@ -1439,6 +1528,81 @@ function bindSettingsUI() {
         userAutoEnhanceEl.addEventListener('change', (e) => {
             getSettings().userAutoEnhance = e.target.checked;
             saveSettings();
+        });
+    }
+
+    // Enhancement mode selector (pre-send / post-send)
+    const enhanceModeEl = document.getElementById('redraft_user_enhance_mode');
+    if (enhanceModeEl) {
+        enhanceModeEl.value = initSettings.userEnhanceMode || 'post';
+        updateEnhanceModeUI(initSettings.userEnhanceMode || 'post');
+        enhanceModeEl.addEventListener('change', (e) => {
+            getSettings().userEnhanceMode = e.target.value;
+            saveSettings();
+            updateEnhanceModeUI(e.target.value);
+        });
+    }
+
+    // User built-in rule toggles
+    for (const key of Object.keys(BUILTIN_USER_RULES)) {
+        const el = document.getElementById(`redraft_user_rule_${key}`);
+        if (el) {
+            el.checked = !!(initSettings.userBuiltInRules?.[key]);
+            el.addEventListener('change', (e) => {
+                const s = getSettings();
+                if (!s.userBuiltInRules) s.userBuiltInRules = {};
+                s.userBuiltInRules[key] = e.target.checked;
+                saveSettings();
+            });
+        }
+    }
+
+    // User custom rules: import
+    const userImportBtn = document.getElementById('redraft_user_import_rules');
+    const userImportFile = document.getElementById('redraft_user_import_rules_file');
+    if (userImportBtn && userImportFile) {
+        userImportBtn.addEventListener('click', () => userImportFile.click());
+        userImportFile.addEventListener('change', (e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+                importCustomRules(file, 'userCustomRules');
+                e.target.value = '';
+            }
+        });
+    }
+
+    // User custom rules: export
+    const userExportBtn = document.getElementById('redraft_user_export_rules');
+    if (userExportBtn) {
+        userExportBtn.addEventListener('click', () => exportCustomRules('userCustomRules'));
+    }
+
+    // User custom rules: master toggle
+    const userCustomToggle = document.getElementById('redraft_user_custom_rules_toggle');
+    if (userCustomToggle) {
+        userCustomToggle.addEventListener('change', (e) => {
+            const s = getSettings();
+            const enable = e.target.checked;
+            (s.userCustomRules || []).forEach(r => r.enabled = enable);
+            saveSettings();
+            renderCustomRules('userCustomRules', 'redraft_user_custom_rules_list');
+        });
+    }
+
+    // User custom rules: add button
+    const userAddRuleBtn = document.getElementById('redraft_user_add_rule');
+    if (userAddRuleBtn) {
+        userAddRuleBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const s = getSettings();
+            if (!s.userCustomRules) s.userCustomRules = [];
+            s.userCustomRules.push({ text: '', enabled: true });
+            saveSettings();
+            renderCustomRules('userCustomRules', 'redraft_user_custom_rules_list');
+            const ruleInputs = document.querySelectorAll('#redraft_user_custom_rules_list .redraft-rule-text');
+            if (ruleInputs.length > 0) {
+                ruleInputs[ruleInputs.length - 1].focus();
+            }
         });
     }
 
@@ -1773,8 +1937,9 @@ function bindSettingsUI() {
         });
     }
 
-    // Render custom rules
+    // Render custom rules (AI refine + user enhance)
     renderCustomRules();
+    renderCustomRules('userCustomRules', 'redraft_user_custom_rules_list');
 
     // Set initial connection mode UI
     updateConnectionModeUI();
@@ -1987,6 +2152,8 @@ function onUserMessageRendered(messageIndex) {
     addMessageButtons();
     const settings = getSettings();
     if (!settings.enabled || !settings.userEnhanceEnabled || !settings.userAutoEnhance) return;
+    // In pre-send mode, the interceptor handles auto-enhance before generation
+    if (settings.userEnhanceMode === 'pre') return;
     if (isRefining) return;
 
     setTimeout(() => {
@@ -2109,6 +2276,168 @@ function registerSlashCommand() {
     console.log(`${LOG_PREFIX} Slash commands /redraft and /enhance registered`);
 }
 
+// ─── Pre-Send Interceptor ───────────────────────────────────────────
+
+/**
+ * SillyTavern generate_interceptor. Called before every generation request.
+ * When pre-send enhance is enabled, enhances the last user message in the
+ * chat array so the main LLM sees the polished version.
+ *
+ * Signature per ST docs: (chat, contextSize, abort, type)
+ *   chat        — mutable message array (same objects as context.chat)
+ *   contextSize — current context size in tokens
+ *   abort       — call abort() to cancel generation
+ *   type        — generation trigger: 'normal', 'quiet', 'regenerate', 'impersonate', 'swipe', etc.
+ */
+globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort, type) {
+    const settings = getSettings();
+
+    if (!settings.enabled || !settings.userEnhanceEnabled) return;
+    if (settings.userEnhanceMode !== 'pre') return;
+    if (isRefining) return;
+
+    // Only intercept normal user-initiated generations
+    if (type === 'quiet' || type === 'impersonate') return;
+
+    // Find the last user message in the chat array
+    let lastUserIdx = -1;
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (chat[i].is_user && chat[i].mes) {
+            lastUserIdx = i;
+            break;
+        }
+    }
+    if (lastUserIdx < 0) return;
+
+    const message = chat[lastUserIdx];
+
+    // Skip very short messages (e.g. "ok", "sure", "*nods*")
+    if (message.mes.trim().length < 20) {
+        console.debug(`${LOG_PREFIX} [pre-send] Skipping short message (${message.mes.trim().length} chars)`);
+        return;
+    }
+
+    // Skip if this message was already enhanced (avoid double-enhance on regenerate/swipe)
+    const context = SillyTavern.getContext();
+    const originals = context.chatMetadata?.['redraft_originals'];
+    if (originals && originals[lastUserIdx] !== undefined) {
+        console.debug(`${LOG_PREFIX} [pre-send] Message ${lastUserIdx} already has an original stored, skipping`);
+        return;
+    }
+
+    // Check plugin availability if in plugin mode
+    if (settings.connectionMode === 'plugin' && !pluginAvailable) {
+        console.warn(`${LOG_PREFIX} [pre-send] Plugin mode selected but plugin unavailable, skipping`);
+        return;
+    }
+
+    console.log(`${LOG_PREFIX} [pre-send] Enhancing user message ${lastUserIdx} before generation`);
+    isRefining = true;
+    toastr.info('Enhancing your message before sending\u2026', 'ReDraft', { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false, className: 'redraft-presend-toast' });
+
+    try {
+        const { stripped, blocks } = stripProtectedBlocks(message.mes, {
+            protectFontTags: settings.protectFontTags,
+        });
+
+        const rulesText = compileUserRules(settings);
+
+        const contextParts = [];
+        const char = context.characters?.[context.characterId];
+        const charLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
+        const charDesc = char?.data?.personality || char?.data?.description?.substring(0, charLimit) || '';
+
+        const systemPrompt = settings.userSystemPrompt?.trim() || DEFAULT_USER_ENHANCE_SYSTEM_PROMPT;
+
+        const personaDesc = getUserPersonaDescription();
+        const personaLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
+        if (context.name1 || personaDesc) {
+            const truncatedPersona = personaDesc ? personaDesc.substring(0, personaLimit) : '';
+            contextParts.push(`Your character (who you are writing as): ${context.name1 || 'Unknown'}${truncatedPersona ? ' \u2014 ' + truncatedPersona : ''}`);
+        }
+
+        if (context.name2 || charDesc) {
+            contextParts.push(`Character you are interacting with: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
+        }
+
+        // Previous AI response (for scene context)
+        const prevAiMsg = [...chat.slice(0, lastUserIdx)].reverse().find(m => !m.is_user && m.mes);
+        if (prevAiMsg) {
+            const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
+            contextParts.push(`Last response from ${context.name2 || 'the character'} (for scene context, last ~${tailChars} chars):\n${prevAiMsg.mes.slice(-tailChars)}`);
+        }
+
+        // PoV
+        let povKey = settings.pov || 'auto';
+        const wasAuto = povKey === 'auto';
+        if (povKey === 'detect' || povKey === 'auto') {
+            const detected = detectPov(stripped);
+            if (detected) {
+                povKey = detected;
+            } else if (povKey === 'detect') {
+                povKey = 'auto';
+            }
+        }
+        if (povKey !== 'auto' && POV_INSTRUCTIONS[povKey]) {
+            contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
+        }
+
+        const contextBlock = contextParts.length > 0
+            ? `Context:\n${contextParts.join('\n\n')}\n\n`
+            : '';
+
+        const promptText = `${contextBlock}Apply the following enhancement rules to the message below. Any [PROTECTED_N] placeholders are protected regions — output them exactly as-is.
+
+Remember: output [CHANGELOG]...[/CHANGELOG] first, then the enhanced message inside [REFINED]...[/REFINED]. No other text outside these tags.
+
+Rules:\n${rulesText}\n\nOriginal message:\n${stripped}`;
+
+        let refinedText;
+        if (settings.connectionMode === 'plugin') {
+            refinedText = await refineViaPlugin(promptText, systemPrompt);
+        } else {
+            refinedText = await refineViaST(promptText, systemPrompt);
+        }
+
+        const { changelog, refined: cleanRefined } = parseChangelog(refinedText);
+        if (changelog) {
+            console.log(`${LOG_PREFIX} [pre-send] Changelog:`, changelog);
+        }
+
+        refinedText = restoreProtectedBlocks(cleanRefined, blocks);
+
+        // Store original for undo and update the chat message in place
+        const { chatMetadata, saveChat, saveMetadata: saveMeta } = context;
+        if (!chatMetadata['redraft_originals']) chatMetadata['redraft_originals'] = {};
+        chatMetadata['redraft_originals'][lastUserIdx] = message.mes;
+
+        if (!chatMetadata['redraft_diffs']) chatMetadata['redraft_diffs'] = {};
+        chatMetadata['redraft_diffs'][lastUserIdx] = { original: message.mes, changelog: changelog || null };
+
+        message.mes = refinedText;
+        await saveChat();
+        await saveMeta();
+
+        // Re-render the user message so the UI shows the enhanced version
+        rerenderMessage(lastUserIdx);
+        showUndoButton(lastUserIdx);
+        showDiffButton(lastUserIdx, chatMetadata['redraft_originals'][lastUserIdx], refinedText, changelog);
+
+        console.log(`${LOG_PREFIX} [pre-send] User message ${lastUserIdx} enhanced successfully`);
+        toastr.clear();
+        toastr.success('Message enhanced (pre-send)', 'ReDraft');
+        playNotificationSound();
+    } catch (err) {
+        console.error(`${LOG_PREFIX} [pre-send] Enhancement failed:`, err);
+        toastr.clear();
+        toastr.warning('Pre-send enhancement failed, sending original message', 'ReDraft');
+    } finally {
+        isRefining = false;
+        // Dismiss the "Enhancing..." toast
+        document.querySelectorAll('.redraft-presend-toast').forEach(el => el.remove());
+    }
+};
+
 // ─── Initialization ─────────────────────────────────────────────────
 
 (async function init() {
@@ -2142,16 +2471,6 @@ function registerSlashCommand() {
                 <span>Auto-refine new AI messages</span>
             </label>
 
-            <hr style="margin: 8px 0; opacity: 0.2;" />
-            <small class="redraft-section-hint" style="margin-bottom: 4px;">Enhance your own messages — fix grammar, match your persona voice, check lore.</small>
-            <label class="checkbox_label" title="Show an Enhance button on your messages. Uses your persona page for character voice matching.">
-                <input type="checkbox" id="redraft_user_enhance" />
-                <span>Enhance user messages</span>
-            </label>
-            <label class="checkbox_label" title="Automatically enhance your messages right after you send them.">
-                <input type="checkbox" id="redraft_user_auto_enhance" />
-                <span>Auto-enhance after sending</span>
-            </label>
             <hr style="margin: 8px 0; opacity: 0.2;" />
 
             <label class="checkbox_label">
@@ -2271,15 +2590,14 @@ function registerSlashCommand() {
                 </div>
             </div>
 
-            <!-- Rules Section -->
+            <!-- Rules Section (AI messages) -->
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <span>Rules</span>
+                    <span>Rules (AI Refine)</span>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
-                    <small class="redraft-section-hint">Active rules are sent to the refinement LLM along with the
-                        message.</small>
+                    <small class="redraft-section-hint">Rules for refining AI-generated messages. User message enhancement has its own rules in the Enhance section below.</small>
 
                     <div class="redraft-rules-builtins">
                         <label class="checkbox_label" title="Fix grammatical errors, spelling mistakes, and awkward phrasing. Preserves intentional dialect, slang, and character-specific speech.">
@@ -2343,6 +2661,102 @@ function registerSlashCommand() {
                 </div>
             </div>
 
+            <!-- Enhance Section (User messages) -->
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <span>Enhance (User Messages)</span>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <small class="redraft-section-hint" style="margin-bottom: 6px;">Enhance your own messages — fix grammar, match your persona voice, improve prose.</small>
+
+                    <label class="checkbox_label" title="Show an Enhance button on your messages. Uses your persona page for character voice matching.">
+                        <input type="checkbox" id="redraft_user_enhance" />
+                        <span>Enable user message enhancement</span>
+                    </label>
+
+                    <div class="redraft-form-group" style="margin-top: 6px;">
+                        <label for="redraft_user_enhance_mode">Enhancement Mode</label>
+                        <select id="redraft_user_enhance_mode">
+                            <option value="post">Post-send (enhance after message is sent)</option>
+                            <option value="pre">Pre-send (enhance before AI sees your message)</option>
+                        </select>
+                    </div>
+                    <small id="redraft_enhance_mode_hint" class="redraft-section-hint" style="margin-top: 2px; display: none;"></small>
+
+                    <div id="redraft_post_send_options">
+                        <label class="checkbox_label" title="Automatically enhance your messages right after you send them.">
+                            <input type="checkbox" id="redraft_user_auto_enhance" />
+                            <span>Auto-enhance after sending</span>
+                        </label>
+                    </div>
+
+                    <hr style="margin: 8px 0; opacity: 0.2;" />
+                    <small class="redraft-section-hint" style="margin-bottom: 4px;">Rules for enhancing user-written messages.</small>
+
+                    <div class="redraft-rules-builtins">
+                        <label class="checkbox_label" title="Fix grammatical errors, spelling mistakes, and awkward phrasing while respecting intentional character voice.">
+                            <input type="checkbox" id="redraft_user_rule_grammar" />
+                            <span>Fix grammar &amp; spelling</span>
+                        </label>
+                        <label class="checkbox_label" title="Match your writing to your character's established voice, register, and speech patterns using your persona description.">
+                            <input type="checkbox" id="redraft_user_rule_personaVoice" />
+                            <span>Match persona voice</span>
+                        </label>
+                        <label class="checkbox_label" title="Improve phrasing, smooth out clunky constructions, and add vividness without changing meaning.">
+                            <input type="checkbox" id="redraft_user_rule_prose" />
+                            <span>Improve prose</span>
+                        </label>
+                        <label class="checkbox_label" title="Fix orphaned formatting marks, ensure consistent conventions (asterisks for actions, quotes for dialogue).">
+                            <input type="checkbox" id="redraft_user_rule_formatting" />
+                            <span>Fix formatting</span>
+                        </label>
+                        <label class="checkbox_label" title="Check that your actions and references are consistent with the previous AI response and established scene.">
+                            <input type="checkbox" id="redraft_user_rule_sceneContinuity" />
+                            <span>Check scene continuity</span>
+                        </label>
+                        <label class="checkbox_label" title="If your message is very brief (1-2 sentences), expand it with sensory detail, body language, and interiority while preserving intent.">
+                            <input type="checkbox" id="redraft_user_rule_expandBrevity" />
+                            <span>Expand brief messages</span>
+                        </label>
+                    </div>
+
+                    <hr />
+
+                    <div class="redraft-custom-rules-header">
+                        <label class="checkbox_label" style="margin:0;gap:4px;">
+                            <input type="checkbox" id="redraft_user_custom_rules_toggle" title="Enable/disable all user custom rules" />
+                            <small>Custom Rules (ordered by priority)</small>
+                        </label>
+                        <div>
+                            <div id="redraft_user_import_rules" class="menu_button menu_button_icon" title="Import user enhance rules from JSON">
+                                <i class="fa-solid fa-file-import"></i>
+                            </div>
+                            <input type="file" id="redraft_user_import_rules_file" accept=".json" hidden />
+                            <div id="redraft_user_export_rules" class="menu_button menu_button_icon" title="Export user enhance rules to JSON">
+                                <i class="fa-solid fa-file-export"></i>
+                            </div>
+                            <div id="redraft_user_add_rule" class="menu_button menu_button_icon" title="Add custom user enhance rule">
+                                <i class="fa-solid fa-plus"></i>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="redraft_user_custom_rules_list" class="redraft-custom-rules-list">
+                        <!-- User custom rules injected here by JS -->
+                    </div>
+
+                    <hr style="margin: 8px 0; opacity: 0.2;" />
+
+                    <div class="redraft-form-group">
+                        <label for="redraft_user_system_prompt">System Prompt Override</label>
+                        <textarea id="redraft_user_system_prompt" class="text_pole textarea_compact" rows="3"
+                            style="resize:vertical;field-sizing:content;max-height:50vh;"
+                            placeholder="Leave blank for default user enhancement prompt..."></textarea>
+                    </div>
+                </div>
+            </div>
+
             <!-- Advanced Section -->
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
@@ -2386,12 +2800,6 @@ function registerSlashCommand() {
                         <textarea id="redraft_system_prompt" class="text_pole textarea_compact" rows="3"
                             style="resize:vertical;field-sizing:content;max-height:50vh;"
                             placeholder="Leave blank for default refinement prompt..."></textarea>
-                    </div>
-                    <div class="redraft-form-group">
-                        <label for="redraft_user_system_prompt">System Prompt Override (user messages)</label>
-                        <textarea id="redraft_user_system_prompt" class="text_pole textarea_compact" rows="3"
-                            style="resize:vertical;field-sizing:content;max-height:50vh;"
-                            placeholder="Leave blank for default user enhancement prompt..."></textarea>
                     </div>
                 </div>
             </div>

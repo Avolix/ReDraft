@@ -122,6 +122,83 @@ describe('compileRules', () => {
     });
 });
 
+// ─── compileRules with opts (user enhance rules) ────────────────────
+
+describe('compileRules with opts (user enhance mode)', () => {
+    const userRules = {
+        grammar: { label: 'Grammar', prompt: 'Fix user grammar.' },
+        personaVoice: { label: 'Persona', prompt: 'Match persona voice.' },
+        expandBrevity: { label: 'Expand', prompt: 'Expand brief messages.' },
+    };
+
+    it('reads from userBuiltInRules and userCustomRules when opts are provided', () => {
+        const settings = {
+            builtInRules: { grammar: true }, // should be ignored
+            customRules: [{ enabled: true, text: 'AI custom rule' }], // should be ignored
+            userBuiltInRules: { grammar: true, personaVoice: false, expandBrevity: true },
+            userCustomRules: [{ enabled: true, text: 'User custom rule' }],
+        };
+        const result = compileRules(settings, userRules, {
+            enabledMap: 'userBuiltInRules',
+            customKey: 'userCustomRules',
+        });
+        expect(result).toBe('1. Fix user grammar.\n2. Expand brief messages.\n3. User custom rule');
+    });
+
+    it('uses fallback when no user rules are active', () => {
+        const settings = {
+            userBuiltInRules: { grammar: false, personaVoice: false, expandBrevity: false },
+            userCustomRules: [],
+        };
+        const result = compileRules(settings, userRules, {
+            enabledMap: 'userBuiltInRules',
+            customKey: 'userCustomRules',
+        });
+        expect(result).toBe('1. Improve the overall quality of the message');
+    });
+
+    it('handles missing userBuiltInRules gracefully', () => {
+        const settings = {
+            userCustomRules: [{ enabled: true, text: 'Only custom' }],
+        };
+        const result = compileRules(settings, userRules, {
+            enabledMap: 'userBuiltInRules',
+            customKey: 'userCustomRules',
+        });
+        expect(result).toBe('1. Only custom');
+    });
+
+    it('handles missing userCustomRules gracefully', () => {
+        const settings = {
+            userBuiltInRules: { grammar: true, personaVoice: true, expandBrevity: false },
+        };
+        const result = compileRules(settings, userRules, {
+            enabledMap: 'userBuiltInRules',
+            customKey: 'userCustomRules',
+        });
+        expect(result).toBe('1. Fix user grammar.\n2. Match persona voice.');
+    });
+
+    it('does not cross-contaminate with default AI rules', () => {
+        const aiRules = { echo: { label: 'Echo', prompt: 'Remove echo.' } };
+        const settings = {
+            builtInRules: { echo: true },
+            customRules: [{ enabled: true, text: 'AI rule' }],
+            userBuiltInRules: { grammar: true, personaVoice: false, expandBrevity: false },
+            userCustomRules: [{ enabled: true, text: 'User rule' }],
+        };
+
+        const aiResult = compileRules(settings, aiRules);
+        expect(aiResult).toBe('1. Remove echo.\n2. AI rule');
+
+        const userResult = compileRules(settings, userRules, {
+            enabledMap: 'userBuiltInRules',
+            customKey: 'userCustomRules',
+        });
+        expect(userResult).toBe('1. Fix user grammar.\n2. User rule');
+    });
+});
+
 // ─── stripProtectedBlocks / restoreProtectedBlocks ──────────────────
 
 describe('stripProtectedBlocks', () => {
