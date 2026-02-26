@@ -566,6 +566,10 @@ function updateConnectionModeUI() {
     if (modeHint) {
         modeHint.style.display = isPluginMode ? '' : 'none';
     }
+    const multiuserHint = document.getElementById('redraft_multiuser_hint');
+    if (multiuserHint) {
+        multiuserHint.style.display = isPluginMode ? '' : 'none';
+    }
     if (pluginUnavailableBlock) {
         pluginUnavailableBlock.style.display = isPluginMode && !pluginAvailable ? '' : 'none';
     }
@@ -640,6 +644,7 @@ async function redraftMessage(messageIndex) {
     }
 
     const settings = getSettings();
+    let refineSucceeded = false;
 
     // Check if plugin mode is selected but plugin is unavailable
     if (settings.connectionMode === 'plugin' && !pluginAvailable) {
@@ -651,8 +656,9 @@ async function redraftMessage(messageIndex) {
         return;
     }
 
-    // Set re-entrancy guard
+    // Set re-entrancy guard and start timer for floating-button display
     isRefining = true;
+    const refineStartTime = Date.now();
     setPopoutTriggerLoading(true);
 
     // Clean up stale undo/diff buttons from prior refinement of this message
@@ -695,16 +701,21 @@ async function redraftMessage(messageIndex) {
             contextParts.push(`User character: ${context.name1}`);
         }
 
-        // Point of view instruction
+        // Point of view instruction: always try to add one when we have a concrete mode.
+        // - Manual (1st/1.5/2nd/3rd): use that.
+        // - Detect: run detection, use result or skip.
+        // - Auto: run detection and use result if clear (so default still gets POV fixing when message has clear pronoun usage).
         let povKey = settings.pov || 'auto';
-        if (povKey === 'detect') {
+        const wasAuto = povKey === 'auto';
+        if (povKey === 'detect' || povKey === 'auto') {
             const detected = detectPov(strippedMessage);
             if (detected) {
                 povKey = detected;
-                console.debug(`${LOG_PREFIX} Detected PoV: ${detected}`);
-            } else {
-                povKey = 'auto'; // Couldn't detect, skip instruction
+                console.debug(`${LOG_PREFIX} PoV ${wasAuto ? '(auto) ' : ''}detected: ${detected}`);
+            } else if (povKey === 'detect') {
+                povKey = 'auto'; // Explicit detect but couldn't detect — skip instruction
             }
+            // If auto and nothing detected, povKey stays 'auto' and we skip the instruction below
         }
         if (povKey !== 'auto' && POV_INSTRUCTIONS[povKey]) {
             contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
@@ -778,7 +789,10 @@ Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
 
         toastr.success('Message refined', 'ReDraft');
         playNotificationSound();
-        console.log(`${LOG_PREFIX} Message ${messageIndex} refined successfully (mode: ${settings.connectionMode})`);
+        refineSucceeded = true;
+        const refineMs = Date.now() - refineStartTime;
+        setPopoutTriggerLoading(false, refineMs);
+        console.log(`${LOG_PREFIX} Message ${messageIndex} refined successfully (mode: ${settings.connectionMode}) in ${(refineMs / 1000).toFixed(1)}s`);
 
     } catch (err) {
         console.error(`${LOG_PREFIX} Refinement failed:`, err.message);
@@ -797,7 +811,10 @@ Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
     } finally {
         isRefining = false;
         setMessageButtonLoading(messageIndex, false);
-        setPopoutTriggerLoading(false);
+        // Only clear loading here on failure; success path already called setPopoutTriggerLoading(false, refineMs)
+        if (!refineSucceeded) {
+            setPopoutTriggerLoading(false);
+        }
     }
 }
 
@@ -885,16 +902,41 @@ function setMessageButtonLoading(messageIndex, loading) {
     }
 }
 
-function setPopoutTriggerLoading(loading) {
+let _triggerDurationTimeout = null;
+
+function setPopoutTriggerLoading(loading, lastDurationMs) {
     const trigger = document.getElementById('redraft_popout_trigger');
     if (!trigger) return;
     if (loading) {
+        if (_triggerDurationTimeout) {
+            clearTimeout(_triggerDurationTimeout);
+            _triggerDurationTimeout = null;
+        }
         trigger.classList.add('redraft-refining');
         trigger.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
     } else {
         trigger.classList.remove('redraft-refining');
-        trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-auto-dot"></span>';
-        updatePopoutAutoState();
+        if (typeof lastDurationMs === 'number' && lastDurationMs >= 0) {
+            const sec = lastDurationMs / 1000;
+            const durationText = sec >= 10 ? `${Math.round(sec)}s` : sec % 1 === 0 ? `${sec}s` : `${sec.toFixed(1)}s`;
+            trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-trigger-duration">' + durationText + '</span><span class="redraft-auto-dot"></span>';
+            trigger.title = `ReDraft — last refine: ${durationText}`;
+            updatePopoutAutoState();
+            if (_triggerDurationTimeout) clearTimeout(_triggerDurationTimeout);
+            _triggerDurationTimeout = setTimeout(() => {
+                _triggerDurationTimeout = null;
+                const t = document.getElementById('redraft_popout_trigger');
+                if (t && !t.classList.contains('redraft-refining')) {
+                    t.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-auto-dot"></span>';
+                    t.title = 'ReDraft';
+                    updatePopoutAutoState();
+                }
+            }, 5000);
+        } else {
+            trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-auto-dot"></span>';
+            trigger.title = 'ReDraft';
+            updatePopoutAutoState();
+        }
     }
 }
 
@@ -1980,6 +2022,9 @@ function registerSlashCommand() {
                     </div>
                     <p id="redraft_connection_mode_hint" class="redraft-connection-hint" style="display: none;">
                         Use a different API/model for refinement (e.g. a faster or cheaper model). One-time plugin install required — see install instructions below.
+                    </p>
+                    <p id="redraft_multiuser_hint" class="redraft-section-hint" style="display: none; margin-top: 4px;">
+                        In multi-user setups, Separate LLM credentials are shared for all users (one config per server).
                     </p>
 
                     <!-- Banner: ST mode, plugin not installed (nudge) -->

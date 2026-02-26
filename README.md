@@ -22,6 +22,8 @@ To use a **different API/model only for refinement** (e.g. a faster or cheaper m
 
 Credentials are stored on the SillyTavern server (not in the browser).
 
+**Multi-user:** Extension settings are per user. The Separate LLM (server plugin) config is shared for the whole server — see [INSTALL_PLUGIN.md](INSTALL_PLUGIN.md#multi-user-setups).
+
 ## Features
 
 - **Zero config (default)**: Uses your existing SillyTavern API connection — nothing extra to install

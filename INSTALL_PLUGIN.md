@@ -84,6 +84,17 @@ Credentials are saved on the server (in the plugin’s `config.json`), not in th
 
 ---
 
+## Multi-user setups
+
+If you run SillyTavern with **multi-user mode** (`enableUserAccounts: true`):
+
+- **ReDraft extension settings** (rules, notification sound, PoV, etc.) are **per user** — each user has their own, as with other ST extension and UI settings.
+- **Separate LLM (server plugin) credentials** are **shared for the whole server**. The plugin has a single `config.json` in `plugins/redraft/`. Whoever saves API URL, Key, and Model last overwrites for everyone; all users then use that same key and model for refinement when they choose "Separate LLM" in ReDraft.
+
+So in a multi-user setup, either accept one shared refinement API/model for all users, or have each user use **Use current ST connection** instead of Separate LLM so they each use their own ST API and model.
+
+---
+
 ## Verify
 
 - **Status dot** (next to “Connection” in ReDraft): green = using ST connection (ST mode) or plugin configured (Separate LLM mode).

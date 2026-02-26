@@ -40,6 +40,13 @@
     display: block;
 }
 
+.redraft-popout-trigger .redraft-trigger-duration {
+    font-size: 0.65em;
+    font-weight: 600;
+    margin-left: 2px;
+    opacity: 0.9;
+}
+
 /* Floating popout panel */
 .redraft-popout-panel {
     position: fixed;
