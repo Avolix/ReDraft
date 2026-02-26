@@ -4,6 +4,14 @@ All notable user-facing changes to ReDraft are documented here.
 
 ---
 
+## 2.2.2
+
+### Fixes
+
+- Fixed auto-refine triggering on the card's greeting message when starting a new chat — greetings are now skipped since no user message has been sent yet.
+
+---
+
 ## 2.2.1
 
 ### Fixes

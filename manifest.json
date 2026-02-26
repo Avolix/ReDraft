@@ -8,7 +8,7 @@
     "css": "style.css",
     "generate_interceptor": "redraftGenerateInterceptor",
     "author": "Avolix",
-    "version": "2.2.1",
+    "version": "2.2.2",
     "homePage": "https://github.com/Avolix/ReDraft",
     "auto_update": true
 }

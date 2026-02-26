@@ -33,7 +33,7 @@ import {
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
-const EXTENSION_VERSION = '2.2.1';
+const EXTENSION_VERSION = '2.2.2';
 
 /**
  * Base URL path for the ReDraft server plugin API. Thin adapter over the
@@ -1971,6 +1971,9 @@ function onCharacterMessageRendered(messageIndex) {
     const settings = getSettings();
     if (!settings.enabled || !settings.autoRefine) return;
     if (isRefining) return;
+
+    // Skip the greeting (always index 0)
+    if (messageIndex === 0) return;
 
     setTimeout(() => {
         redraftMessage(messageIndex);
