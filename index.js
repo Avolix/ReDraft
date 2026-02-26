@@ -77,15 +77,6 @@ const defaultSettings = Object.freeze({
     notificationSoundUrl: '', // '' = built-in beep; or URL / data URL for custom
 });
 
-const POV_LABELS = {
-    auto: 'Auto (no instruction)',
-    detect: 'Detect from message',
-    '1st': '1st person (I/me)',
-    '1.5': '1.5th person (I + you)',
-    '2nd': '2nd person (you)',
-    '3rd': '3rd person (he/she/they)',
-};
-
 const POV_INSTRUCTIONS = {
     '1st': 'PERSPECTIVE RULES (MANDATORY): "I/me/my" = the AI narrator character ONLY. "you/your" = the player\'s character ONLY. All other characters = "he/she/they." These assignments are absolute \u2014 do not swap, mix, or shift them. If any pronoun violates this map, fix it.',
     '1.5': 'PERSPECTIVE RULES (MANDATORY): "I/me/my" = the current POV AI character. "you/your" = the player\'s character \u2014 ALWAYS in descriptions and actions, no exceptions. All other AI characters = "he/she/they." Do not use "I" for the player\'s character under any circumstance. Do not use "he/she/they" for the player\'s character in descriptions or actions \u2014 always "you/your." If any pronoun violates this map, fix it.',
@@ -624,6 +615,69 @@ async function refineViaPlugin(promptText, systemPrompt) {
 }
 
 /**
+ * Build the full prompt and system prompt for user-message enhancement.
+ * Shared between redraftMessage (post-send) and the pre-send interceptor.
+ *
+ * @param {object} settings - Extension settings
+ * @param {object} context - SillyTavern context
+ * @param {object[]} chatArray - The chat message array to search for context
+ * @param {number} messageIndex - Index of the user message being enhanced
+ * @param {string} strippedMessage - Message text with protected blocks replaced
+ * @returns {{ systemPrompt: string, promptText: string }}
+ */
+function buildUserEnhancePrompt(settings, context, chatArray, messageIndex, strippedMessage) {
+    const contextParts = [];
+    const char = context.characters?.[context.characterId];
+    const charLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
+    const charDesc = char?.data?.personality || char?.data?.description?.substring(0, charLimit) || '';
+
+    const systemPrompt = settings.userSystemPrompt?.trim() || DEFAULT_USER_ENHANCE_SYSTEM_PROMPT;
+    const rulesText = compileUserRules(settings);
+
+    const personaDesc = getUserPersonaDescription();
+    const personaLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
+    if (context.name1 || personaDesc) {
+        const truncatedPersona = personaDesc ? personaDesc.substring(0, personaLimit) : '';
+        contextParts.push(`Your character (who you are writing as): ${context.name1 || 'Unknown'}${truncatedPersona ? ' \u2014 ' + truncatedPersona : ''}`);
+    }
+
+    if (context.name2 || charDesc) {
+        contextParts.push(`Character you are interacting with: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
+    }
+
+    const prevAiMsg = [...chatArray.slice(0, messageIndex)].reverse().find(m => !m.is_user && m.mes);
+    if (prevAiMsg) {
+        const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
+        contextParts.push(`Last response from ${context.name2 || 'the character'} (for scene context, last ~${tailChars} chars):\n${prevAiMsg.mes.slice(-tailChars)}`);
+    }
+
+    let povKey = settings.pov || 'auto';
+    if (povKey === 'detect' || povKey === 'auto') {
+        const detected = detectPov(strippedMessage);
+        if (detected) {
+            povKey = detected;
+        } else if (povKey === 'detect') {
+            povKey = 'auto';
+        }
+    }
+    if (povKey !== 'auto' && POV_INSTRUCTIONS[povKey]) {
+        contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
+    }
+
+    const contextBlock = contextParts.length > 0
+        ? `Context:\n${contextParts.join('\n\n')}\n\n`
+        : '';
+
+    const promptText = `${contextBlock}Apply the following enhancement rules to the message below. Any [PROTECTED_N] placeholders are protected regions — output them exactly as-is.
+
+Remember: output [CHANGELOG]...[/CHANGELOG] first, then the enhanced message inside [REFINED]...[/REFINED]. No other text outside these tags.
+
+Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
+
+    return { systemPrompt, promptText };
+}
+
+/**
  * Refine a message at the given index.
  * @param {number} messageIndex Index in context.chat
  */
@@ -688,47 +742,24 @@ async function redraftMessage(messageIndex) {
             protectFontTags: settings.protectFontTags,
         });
 
-        // Build the refinement prompt — user messages get their own rule set
-        const rulesText = isUserMessage ? compileUserRules(settings) : compileRules(settings);
-
-        // Gather context for the LLM — different framing for user vs AI messages
-        const contextParts = [];
-        const char = context.characters?.[context.characterId];
-        const charLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
-        const charDesc = char?.data?.personality
-            || char?.data?.description?.substring(0, charLimit)
-            || '';
-
         let systemPrompt;
+        let promptText;
 
         if (isUserMessage) {
             // ── User message enhancement ──
-            systemPrompt = settings.userSystemPrompt?.trim() || DEFAULT_USER_ENHANCE_SYSTEM_PROMPT;
-
-            // User's persona (the character they're writing as)
-            const personaDesc = getUserPersonaDescription();
-            const personaLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
-            if (context.name1 || personaDesc) {
-                const truncatedPersona = personaDesc ? personaDesc.substring(0, personaLimit) : '';
-                contextParts.push(`Your character (who you are writing as): ${context.name1 || 'Unknown'}${truncatedPersona ? ' \u2014 ' + truncatedPersona : ''}`);
-            }
-
-            // The AI character they're interacting with (for lore/context)
-            if (context.name2 || charDesc) {
-                contextParts.push(`Character you are interacting with: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
-            }
-
-            // Previous AI response (for scene context)
-            const prevAiMsg = [...chat.slice(0, messageIndex)].reverse().find(m => !m.is_user && m.mes);
-            if (prevAiMsg) {
-                const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
-                contextParts.push(`Last response from ${context.name2 || 'the character'} (for scene context, last ~${tailChars} chars):\n${prevAiMsg.mes.slice(-tailChars)}`);
-            }
-
-            console.debug(`${LOG_PREFIX} Enhancing user message ${messageIndex} (persona: ${personaDesc ? personaDesc.length + ' chars' : 'none'})`);
+            ({ systemPrompt, promptText } = buildUserEnhancePrompt(settings, context, chat, messageIndex, strippedMessage));
+            console.debug(`${LOG_PREFIX} Enhancing user message ${messageIndex}`);
         } else {
-            // ── AI message refinement (existing behavior) ──
+            // ── AI message refinement ──
             systemPrompt = settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
+            const rulesText = compileRules(settings);
+
+            const contextParts = [];
+            const char = context.characters?.[context.characterId];
+            const charLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
+            const charDesc = char?.data?.personality
+                || char?.data?.description?.substring(0, charLimit)
+                || '';
 
             if (context.name2 || charDesc) {
                 contextParts.push(`Character: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
@@ -737,49 +768,44 @@ async function redraftMessage(messageIndex) {
                 contextParts.push(`User character: ${context.name1}`);
             }
 
-            // Last user message before this AI message (for echo detection)
             const messagesBeforeThis = chat.slice(0, messageIndex);
             const lastUserMsgBefore = [...messagesBeforeThis].reverse().find(m => m.is_user && m.mes);
             if (lastUserMsgBefore) {
                 contextParts.push(`Last user message (what the user said before this response):\n${lastUserMsgBefore.mes}`);
             }
 
-            // Previous AI response ending (for repetition detection)
             const prevAiMsgs = chat.filter((m, i) => !m.is_user && m.mes && i < messageIndex);
             if (prevAiMsgs.length > 0) {
                 const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
                 const prevTail = prevAiMsgs[prevAiMsgs.length - 1].mes.slice(-tailChars);
                 contextParts.push(`Previous response ending (last ~${tailChars} chars):\n${prevTail}`);
             }
-        }
 
-        // Point of view instruction (applies to both user and AI messages)
-        let povKey = settings.pov || 'auto';
-        const wasAuto = povKey === 'auto';
-        if (povKey === 'detect' || povKey === 'auto') {
-            const detected = detectPov(strippedMessage);
-            if (detected) {
-                povKey = detected;
-                console.debug(`${LOG_PREFIX} PoV ${wasAuto ? '(auto) ' : ''}detected: ${detected}`);
-            } else if (povKey === 'detect') {
-                povKey = 'auto';
+            let povKey = settings.pov || 'auto';
+            if (povKey === 'detect' || povKey === 'auto') {
+                const detected = detectPov(strippedMessage);
+                if (detected) {
+                    povKey = detected;
+                } else if (povKey === 'detect') {
+                    povKey = 'auto';
+                }
             }
-        }
-        if (povKey !== 'auto' && POV_INSTRUCTIONS[povKey]) {
-            contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
-        }
+            if (povKey !== 'auto' && POV_INSTRUCTIONS[povKey]) {
+                contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
+            }
 
-        const contextBlock = contextParts.length > 0
-            ? `Context:\n${contextParts.join('\n\n')}\n\n`
-            : '';
+            const contextBlock = contextParts.length > 0
+                ? `Context:\n${contextParts.join('\n\n')}\n\n`
+                : '';
 
-        const actionVerb = isUserMessage ? 'enhancement' : 'refinement';
-        const promptText = `${contextBlock}Apply the following ${actionVerb} rules to the message below. Any [PROTECTED_N] placeholders are protected regions — output them exactly as-is.
+            promptText = `${contextBlock}Apply the following refinement rules to the message below. Any [PROTECTED_N] placeholders are protected regions — output them exactly as-is.
 
-Remember: output [CHANGELOG]...[/CHANGELOG] first, then the ${isUserMessage ? 'enhanced' : 'refined'} message inside [REFINED]...[/REFINED]. No other text outside these tags.
+Remember: output [CHANGELOG]...[/CHANGELOG] first, then the refined message inside [REFINED]...[/REFINED]. No other text outside these tags.
 
 Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
+        }
 
+        const actionVerb = isUserMessage ? 'enhancement' : 'refinement';
         console.debug(`${LOG_PREFIX} [prompt] System prompt (${systemPrompt.length} chars):`, systemPrompt.substring(0, 200) + '\u2026');
         console.debug(`${LOG_PREFIX} [prompt] Full ${actionVerb} prompt (${promptText.length} chars):`);
         console.debug(promptText);
@@ -2381,57 +2407,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
             protectFontTags: settings.protectFontTags,
         });
 
-        const rulesText = compileUserRules(settings);
-
-        const contextParts = [];
-        const char = context.characters?.[context.characterId];
-        const charLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
-        const charDesc = char?.data?.personality || char?.data?.description?.substring(0, charLimit) || '';
-
-        const systemPrompt = settings.userSystemPrompt?.trim() || DEFAULT_USER_ENHANCE_SYSTEM_PROMPT;
-
-        const personaDesc = getUserPersonaDescription();
-        const personaLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
-        if (context.name1 || personaDesc) {
-            const truncatedPersona = personaDesc ? personaDesc.substring(0, personaLimit) : '';
-            contextParts.push(`Your character (who you are writing as): ${context.name1 || 'Unknown'}${truncatedPersona ? ' \u2014 ' + truncatedPersona : ''}`);
-        }
-
-        if (context.name2 || charDesc) {
-            contextParts.push(`Character you are interacting with: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
-        }
-
-        // Previous AI response (for scene context) — use full chat for correct lookback
-        const prevAiMsg = [...fullChat.slice(0, realIdx)].reverse().find(m => !m.is_user && m.mes);
-        if (prevAiMsg) {
-            const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
-            contextParts.push(`Last response from ${context.name2 || 'the character'} (for scene context, last ~${tailChars} chars):\n${prevAiMsg.mes.slice(-tailChars)}`);
-        }
-
-        // PoV
-        let povKey = settings.pov || 'auto';
-        const wasAuto = povKey === 'auto';
-        if (povKey === 'detect' || povKey === 'auto') {
-            const detected = detectPov(stripped);
-            if (detected) {
-                povKey = detected;
-            } else if (povKey === 'detect') {
-                povKey = 'auto';
-            }
-        }
-        if (povKey !== 'auto' && POV_INSTRUCTIONS[povKey]) {
-            contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
-        }
-
-        const contextBlock = contextParts.length > 0
-            ? `Context:\n${contextParts.join('\n\n')}\n\n`
-            : '';
-
-        const promptText = `${contextBlock}Apply the following enhancement rules to the message below. Any [PROTECTED_N] placeholders are protected regions — output them exactly as-is.
-
-Remember: output [CHANGELOG]...[/CHANGELOG] first, then the enhanced message inside [REFINED]...[/REFINED]. No other text outside these tags.
-
-Rules:\n${rulesText}\n\nOriginal message:\n${stripped}`;
+        const { systemPrompt, promptText } = buildUserEnhancePrompt(settings, context, fullChat, realIdx, stripped);
 
         let refinedText;
         if (settings.connectionMode === 'plugin') {

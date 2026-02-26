@@ -4,7 +4,7 @@
  * Uses vi.spyOn with selective pass-through: config-related fs calls are
  * mocked while .js file reads (needed by require()) pass to the real fs.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
@@ -297,5 +297,196 @@ describe('POST /refine', () => {
             body: { messages: 'not an array' },
         }, res);
         expect(res._status).toBe(400);
+    });
+
+    it('returns 502 with status hint on LLM 401 error', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: false,
+            status: 401,
+            text: async () => 'Unauthorized',
+        }));
+        const res = createMockRes();
+        await routes.post['/refine']({
+            headers: {},
+            body: { messages: [{ role: 'user', content: 'hello' }] },
+        }, res);
+        expect(res._status).toBe(502);
+        expect(res._body.error).toContain('401');
+        expect(res._body.error).toContain('Unauthorized');
+    });
+
+    it('returns 502 with hint when API returns HTML', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            text: async () => '<!DOCTYPE html><html><body>Login</body></html>',
+        }));
+        const res = createMockRes();
+        await routes.post['/refine']({
+            headers: {},
+            body: { messages: [{ role: 'user', content: 'hello' }] },
+        }, res);
+        expect(res._status).toBe(502);
+        expect(res._body.error).toContain('web page instead of JSON');
+    });
+
+    it('returns 504 on timeout (AbortError)', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        const abortError = new DOMException('The operation was aborted', 'AbortError');
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));
+        const res = createMockRes();
+        await routes.post['/refine']({
+            headers: {},
+            body: { messages: [{ role: 'user', content: 'hello' }] },
+        }, res);
+        expect(res._status).toBe(504);
+        expect(res._body.error).toContain('timed out');
+    });
+
+    it('returns successful refinement text', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+                choices: [{ message: { content: 'Refined text here.' } }],
+            }),
+        }));
+        const res = createMockRes();
+        await routes.post['/refine']({
+            headers: {},
+            body: { messages: [{ role: 'user', content: 'hello' }] },
+        }, res);
+        expect(res._status).toBe(200);
+        expect(res._body.text).toBe('Refined text here.');
+    });
+});
+
+// ─── GET /models ────────────────────────────────────────────────────
+
+describe('GET /models', () => {
+    it('returns 503 when not configured', async () => {
+        const routes = await initPlugin();
+        const res = createMockRes();
+        await routes.get['/models']({ headers: {} }, res);
+        expect(res._status).toBe(503);
+        expect(res._body.error).toContain('Not configured');
+    });
+
+    it('returns sorted models list on success', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            json: async () => ({
+                data: [
+                    { id: 'gpt-4o', name: 'GPT-4o' },
+                    { id: 'gpt-3.5-turbo' },
+                    { id: 'gpt-4' },
+                ],
+            }),
+        }));
+        const res = createMockRes();
+        await routes.get['/models']({ headers: {} }, res);
+        expect(res._status).toBe(200);
+        expect(res._body.models).toHaveLength(3);
+        expect(res._body.models[0].id).toBe('gpt-3.5-turbo');
+        expect(res._body.models[1].id).toBe('gpt-4');
+        expect(res._body.models[2].id).toBe('gpt-4o');
+        expect(res._body.models[2].name).toBe('GPT-4o');
+    });
+
+    it('returns 502 with hint on API 401 error', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: false,
+            status: 401,
+            text: async () => 'Unauthorized',
+        }));
+        const res = createMockRes();
+        await routes.get['/models']({ headers: {} }, res);
+        expect(res._status).toBe(502);
+        expect(res._body.error).toContain('401');
+        expect(res._body.error).toContain('API key may be invalid');
+    });
+
+    it('returns 502 with hint on API 403 error', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: false,
+            status: 403,
+            text: async () => 'Forbidden',
+        }));
+        const res = createMockRes();
+        await routes.get['/models']({ headers: {} }, res);
+        expect(res._status).toBe(502);
+        expect(res._body.error).toContain('403');
+        expect(res._body.error).toContain('permission');
+    });
+
+    it('handles timeout without crashing (AbortError)', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        const abortError = new DOMException('The operation was aborted', 'AbortError');
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));
+        const res = createMockRes();
+        await routes.get['/models']({ headers: {} }, res);
+        expect(res._status).toBe(504);
+        expect(res._body.error).toContain('timed out');
+    });
+
+    it('handles fetch error gracefully', async () => {
+        const config = {
+            apiUrl: 'https://api.example.com/v1',
+            apiKey: 'sk-abcdef1234567890',
+            model: 'gpt-4',
+        };
+        const routes = await initPlugin(config);
+        vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
+        const res = createMockRes();
+        await routes.get['/models']({ headers: {} }, res);
+        expect(res._status).toBe(500);
+        expect(res._body.error).toContain('Failed to fetch models');
     });
 });

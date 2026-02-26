@@ -157,12 +157,16 @@ function tryUpdateFromExtension() {
     }
     if (extMtime <= localMtime) return;
 
-    const filesToCopy = ['index.js', 'config.json.example'];
+    const filesToCopy = ['index.js', 'config.json.example', 'lib/utils.js'];
     for (const file of filesToCopy) {
         const src = path.join(extensionDir, file);
         const dest = path.join(pluginDir, file);
         if (!fs.existsSync(src)) continue;
         try {
+            const destDir = path.dirname(dest);
+            if (!fs.existsSync(destDir)) {
+                fs.mkdirSync(destDir, { recursive: true });
+            }
             fs.copyFileSync(src, dest);
         } catch (e) {
             console.warn(`[${MODULE_NAME}] Could not copy ${file}:`, e.message);
@@ -190,7 +194,7 @@ async function init(router) {
     readConfig();
 
     fs.watch(CONFIG_DIR, (eventType, filename) => {
-        if (filename && (filename === 'config.json' || filename.startsWith('config.') && filename.endsWith('.json'))) {
+        if (filename && (filename === 'config.json' || (filename.startsWith('config.') && filename.endsWith('.json')))) {
             const userId = filename === 'config.json' ? '__shared' : filename.slice(7, -5);
             configCache.delete(userId);
             console.log(`[${MODULE_NAME}] Config file changed (${filename}), cache invalidated.`);
@@ -279,9 +283,10 @@ async function init(router) {
      * Returns: { models: [{ id, name? }] }
      */
     router.get('/models', async (req, res) => {
+        let config = null;
         try {
             const userId = getUserId(req);
-            const config = readConfigForUser(userId);
+            config = readConfigForUser(userId);
             if (!config || !config.apiKey || !config.apiUrl) {
                 return res.status(503).json({ error: 'Not configured. Save API credentials first.' });
             }
@@ -379,24 +384,28 @@ async function init(router) {
                 temperature: 0.3,
             };
 
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
             let response;
             let rawBody;
 
             for (let attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
-                response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${config.apiKey}`,
-                    },
-                    body: JSON.stringify(payload),
-                    signal: controller.signal,
-                });
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-                rawBody = await response.text();
+                try {
+                    response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${config.apiKey}`,
+                        },
+                        body: JSON.stringify(payload),
+                        signal: controller.signal,
+                    });
+
+                    rawBody = await response.text();
+                } finally {
+                    clearTimeout(timeout);
+                }
 
                 if (response.ok || response.status !== 503 || attempt === MAX_LLM_ATTEMPTS) break;
 
@@ -404,8 +413,6 @@ async function init(router) {
                 console.warn(`[${MODULE_NAME}] LLM returned 503 for model "${config.model}" (attempt ${attempt}/${MAX_LLM_ATTEMPTS}), retrying in ${delay}ms...`);
                 await new Promise(resolve => setTimeout(resolve, delay));
             }
-
-            clearTimeout(timeout);
 
             if (!response.ok) {
                 const sanitized = sanitizeError(rawBody, config);

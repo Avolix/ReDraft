@@ -457,6 +457,19 @@ describe('lcsTable', () => {
         const dp = lcsTable(['a', 'b'], []);
         expect(dp[2][0]).toBe(0);
     });
+
+    it('uses Uint32Array to avoid overflow on large inputs', () => {
+        const a = ['x', 'y'];
+        const b = ['y', 'z'];
+        const dp = lcsTable(a, b);
+        expect(dp[0]).toBeInstanceOf(Uint32Array);
+    });
+
+    it('Uint32Array can store values above Uint16 max (65535)', () => {
+        const dp = lcsTable(['a'], ['a']);
+        dp[1][1] = 70000;
+        expect(dp[1][1]).toBe(70000);
+    });
 });
 
 // ─── computeWordDiff ────────────────────────────────────────────────

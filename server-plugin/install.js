@@ -63,7 +63,7 @@ if (!fs.existsSync(targetDir)) {
 }
 
 // Copy plugin files (everything except install.js itself)
-const filesToCopy = ['index.js', 'config.json.example'];
+const filesToCopy = ['index.js', 'config.json.example', 'lib/utils.js'];
 let copied = 0;
 
 for (const file of filesToCopy) {
@@ -73,6 +73,11 @@ for (const file of filesToCopy) {
     if (!fs.existsSync(src)) {
         console.warn(`  SKIP: ${file} (not found in bundle)`);
         continue;
+    }
+
+    const destDir = path.dirname(dest);
+    if (!fs.existsSync(destDir)) {
+        fs.mkdirSync(destDir, { recursive: true });
     }
 
     fs.copyFileSync(src, dest);
