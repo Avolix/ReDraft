@@ -472,7 +472,8 @@
 
 /* Per-message refine button — inherits .mes_button, no custom styles needed */
 
-.mes_button.redraft-msg-btn.redraft-loading {
+.mes_button.redraft-msg-btn.redraft-loading,
+.mes_button.redraft-enhance-btn.redraft-loading {
     pointer-events: none;
     opacity: 0.5;
 }

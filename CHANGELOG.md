@@ -1,6 +1,45 @@
 # Changelog
 
-Changelogs here are written for **end users**. We use this file to record what changed in each release. *(Internally we treat the release below as ReDraft 2.0.)*
+Changelogs here are written for **end users**. We use this file to record what changed in each release.
+
+---
+
+## ReDraft 2.1 — Enhance your own messages
+
+ReDraft can now enhance **your** messages, not just the AI's. Fix grammar, match your character's voice using your persona page, and keep lore consistent — all with one click.
+
+---
+
+### Highlights
+
+**User message enhancement is ready to use**
+
+- **Enhance button on your messages** — A ✨ wand button appears on every user message. Click it to enhance your writing: fix grammar, match your persona's voice, and check lore consistency.
+- **Persona-aware** — ReDraft reads your persona page and uses it to match your character's speech patterns, vocabulary, and personality. The more detailed your persona, the better the voice matching.
+- **Auto-enhance** — Optionally auto-enhance your messages right after you send them (off by default). Toggle it in ReDraft settings under "Auto-enhance after sending."
+- **Same rules, different lens** — The same built-in rules (grammar, voice, formatting, lore, etc.) apply. The system prompt is tailored for user-written content — it preserves your intent and treats every line as intentional role-playing.
+- **Separate system prompt** — You can override the system prompt for user messages independently from the AI refinement prompt (Advanced → System Prompt Override for user messages).
+- **`/enhance` slash command** — Type `/enhance` to enhance your last user message, or `/enhance [index]` for a specific message.
+- **Popout button** — The floating popout panel now has an "Enhance Last User Message" button alongside the existing "Refine Last AI Message."
+
+---
+
+### New features
+
+- **Enhance user messages** — Click the ✨ button on any of your messages to enhance it. Fixes grammar, matches your persona voice, checks lore. Uses the same connection (ST or plugin) and rules as AI refinement.
+- **Auto-enhance after sending** — New toggle: "Auto-enhance after sending." When enabled, your messages are automatically enhanced right after you send them.
+- **`/enhance` slash command** — Enhance your last user message (or a specific one by index). Works like `/redraft` but targets user messages.
+- **Persona integration** — Your persona description is sent as context so the LLM can match your character's voice and personality.
+- **User system prompt override** — Customize the system prompt used for user message enhancement separately from AI refinement (in Advanced settings).
+
+---
+
+### How it works
+
+1. **Turn it on** — "Enhance user messages" is on by default. You'll see a ✨ wand icon on your messages.
+2. **Fill out your persona** — The more detail on your persona page, the better ReDraft matches your character's voice.
+3. **Click enhance** — Click the ✨ on any of your messages, or use the popout's "Enhance Last User Message" button, or type `/enhance`.
+4. **Review** — Diff and undo work exactly like AI refinement. You can always restore your original.
 
 ---
 

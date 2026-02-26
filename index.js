@@ -10,7 +10,7 @@
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
-const EXTENSION_VERSION = '2.0';
+const EXTENSION_VERSION = '2.1';
 
 /**
  * Base URL path for the ReDraft server plugin API. Works at root (/) and when ST
@@ -32,6 +32,9 @@ function getPluginBaseUrl() {
 const defaultSettings = Object.freeze({
     enabled: true,
     autoRefine: false,
+    userEnhanceEnabled: true,
+    userAutoEnhance: false,
+    userSystemPrompt: '',
     connectionMode: 'st', // 'st' or 'plugin'
     builtInRules: {
         grammar: true,
@@ -135,6 +138,55 @@ Example:
 Do NOT output any analysis, reasoning, or commentary outside the tags. Only output the two tagged blocks.
 
 You will be given the original message, a set of refinement rules to apply, and optionally context about the characters and recent conversation. Apply the rules faithfully.`;
+
+const DEFAULT_USER_ENHANCE_SYSTEM_PROMPT = `You are a roleplay writing assistant. You enhance user-written roleplay messages by fixing grammar, improving prose, and ensuring the writing matches the user's character persona.
+
+Core principles:
+- Fix grammar, spelling, and punctuation errors
+- Preserve the user's creative intent, actions, dialogue content, and story direction exactly
+- Match the user's character voice and persona — their speech patterns, vocabulary, and personality
+- Keep approximately the same length unless a rule specifically calls for cuts
+- Do not add new story elements, actions, or dialogue not present in the original
+- Do not change the meaning, emotional tone, or direction of what the user wrote
+- Do not censor, sanitize, or tone down content — the original's maturity level is intentional
+- Maintain existing formatting conventions (e.g. *asterisks for actions*, "quotes for dialogue")
+- Enhance prose quality while keeping the user's style — fix awkward phrasing, improve flow
+- Ensure consistency with the user's character persona and established lore
+- The user wrote this message as their character — treat every line as intentional role-playing
+
+Output format (MANDATORY — always follow this structure):
+1. First, output a changelog inside [CHANGELOG]...[/CHANGELOG] tags listing each change you made and which rule motivated it. One line per change. If a rule required no changes, omit it.
+2. Then output the full enhanced message inside [REFINED]...[/REFINED] tags with no other commentary.
+
+Example:
+[CHANGELOG]
+- Grammar: Fixed "their" → "they're" in paragraph 2
+- Voice: Adjusted phrasing to match character's casual speech pattern
+[/CHANGELOG]
+[REFINED]
+(enhanced message here)
+[/REFINED]
+
+Do NOT output any analysis, reasoning, or commentary outside the tags. Only output the two tagged blocks.
+
+You will be given the original message, a set of enhancement rules to apply, and context about the user's character persona and the scene. Apply the rules faithfully.`;
+
+/**
+ * Retrieve the user's persona description from SillyTavern.
+ * Tries the power_user global first (most reliable), then falls back to DOM.
+ */
+function getUserPersonaDescription() {
+    try {
+        if (typeof power_user !== 'undefined' && power_user?.persona_description) {
+            return power_user.persona_description;
+        }
+    } catch { /* not available */ }
+
+    const el = document.getElementById('persona_description');
+    if (el?.value) return el.value;
+
+    return '';
+}
 
 // ─── State ──────────────────────────────────────────────────────────
 
@@ -684,8 +736,9 @@ async function redraftMessage(messageIndex) {
     hideDiffButton(messageIndex);
 
     // Show loading state on the message button + toast
+    const isUserMessage = !!message.is_user;
     setMessageButtonLoading(messageIndex, true);
-    toastr.info('Refining message\u2026', 'ReDraft');
+    toastr.info(isUserMessage ? 'Enhancing message\u2026' : 'Refining message\u2026', 'ReDraft');
 
     try {
         // Save original to chatMetadata for undo
@@ -702,26 +755,70 @@ async function redraftMessage(messageIndex) {
 
         // Build the refinement prompt
         const rulesText = compileRules(settings);
-        const systemPrompt = settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
 
-        // Gather context for the LLM
+        // Gather context for the LLM — different framing for user vs AI messages
         const contextParts = [];
         const char = context.characters?.[context.characterId];
         const charLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
         const charDesc = char?.data?.personality
             || char?.data?.description?.substring(0, charLimit)
             || '';
-        if (context.name2 || charDesc) {
-            contextParts.push(`Character: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
-        }
-        if (context.name1) {
-            contextParts.push(`User character: ${context.name1}`);
+
+        let systemPrompt;
+
+        if (isUserMessage) {
+            // ── User message enhancement ──
+            systemPrompt = settings.userSystemPrompt?.trim() || DEFAULT_USER_ENHANCE_SYSTEM_PROMPT;
+
+            // User's persona (the character they're writing as)
+            const personaDesc = getUserPersonaDescription();
+            const personaLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
+            if (context.name1 || personaDesc) {
+                const truncatedPersona = personaDesc ? personaDesc.substring(0, personaLimit) : '';
+                contextParts.push(`Your character (who you are writing as): ${context.name1 || 'Unknown'}${truncatedPersona ? ' \u2014 ' + truncatedPersona : ''}`);
+            }
+
+            // The AI character they're interacting with (for lore/context)
+            if (context.name2 || charDesc) {
+                contextParts.push(`Character you are interacting with: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
+            }
+
+            // Previous AI response (for scene context)
+            const prevAiMsg = [...chat.slice(0, messageIndex)].reverse().find(m => !m.is_user && m.mes);
+            if (prevAiMsg) {
+                const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
+                contextParts.push(`Last response from ${context.name2 || 'the character'} (for scene context, last ~${tailChars} chars):\n${prevAiMsg.mes.slice(-tailChars)}`);
+            }
+
+            console.debug(`${LOG_PREFIX} Enhancing user message ${messageIndex} (persona: ${personaDesc ? personaDesc.length + ' chars' : 'none'})`);
+        } else {
+            // ── AI message refinement (existing behavior) ──
+            systemPrompt = settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
+
+            if (context.name2 || charDesc) {
+                contextParts.push(`Character: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
+            }
+            if (context.name1) {
+                contextParts.push(`User character: ${context.name1}`);
+            }
+
+            // Last user message before this AI message (for echo detection)
+            const messagesBeforeThis = chat.slice(0, messageIndex);
+            const lastUserMsgBefore = [...messagesBeforeThis].reverse().find(m => m.is_user && m.mes);
+            if (lastUserMsgBefore) {
+                contextParts.push(`Last user message (what the user said before this response):\n${lastUserMsgBefore.mes}`);
+            }
+
+            // Previous AI response ending (for repetition detection)
+            const prevAiMsgs = chat.filter((m, i) => !m.is_user && m.mes && i < messageIndex);
+            if (prevAiMsgs.length > 0) {
+                const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
+                const prevTail = prevAiMsgs[prevAiMsgs.length - 1].mes.slice(-tailChars);
+                contextParts.push(`Previous response ending (last ~${tailChars} chars):\n${prevTail}`);
+            }
         }
 
-        // Point of view instruction: always try to add one when we have a concrete mode.
-        // - Manual (1st/1.5/2nd/3rd): use that.
-        // - Detect: run detection, use result or skip.
-        // - Auto: run detection and use result if clear (so default still gets POV fixing when message has clear pronoun usage).
+        // Point of view instruction (applies to both user and AI messages)
         let povKey = settings.pov || 'auto';
         const wasAuto = povKey === 'auto';
         if (povKey === 'detect' || povKey === 'auto') {
@@ -730,41 +827,26 @@ async function redraftMessage(messageIndex) {
                 povKey = detected;
                 console.debug(`${LOG_PREFIX} PoV ${wasAuto ? '(auto) ' : ''}detected: ${detected}`);
             } else if (povKey === 'detect') {
-                povKey = 'auto'; // Explicit detect but couldn't detect — skip instruction
+                povKey = 'auto';
             }
-            // If auto and nothing detected, povKey stays 'auto' and we skip the instruction below
         }
         if (povKey !== 'auto' && POV_INSTRUCTIONS[povKey]) {
             contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
-        }
-
-        // Last user message before this AI message (for echo detection and user-context rules)
-        const messagesBeforeThis = chat.slice(0, messageIndex);
-        const lastUserMsgBefore = [...messagesBeforeThis].reverse().find(m => m.is_user && m.mes);
-        if (lastUserMsgBefore) {
-            contextParts.push(`Last user message (what the user said before this response):\n${lastUserMsgBefore.mes}`);
-        }
-
-        // Previous AI response ending (for repetition detection)
-        const prevAiMsgs = chat.filter((m, i) => !m.is_user && m.mes && i < messageIndex);
-        if (prevAiMsgs.length > 0) {
-            const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
-            const prevTail = prevAiMsgs[prevAiMsgs.length - 1].mes.slice(-tailChars);
-            contextParts.push(`Previous response ending (last ~${tailChars} chars):\n${prevTail}`);
         }
 
         const contextBlock = contextParts.length > 0
             ? `Context:\n${contextParts.join('\n\n')}\n\n`
             : '';
 
-        const promptText = `${contextBlock}Apply the following refinement rules to the message below. Any [PROTECTED_N] placeholders are protected regions — output them exactly as-is.
+        const actionVerb = isUserMessage ? 'enhancement' : 'refinement';
+        const promptText = `${contextBlock}Apply the following ${actionVerb} rules to the message below. Any [PROTECTED_N] placeholders are protected regions — output them exactly as-is.
 
-Remember: output [CHANGELOG]...[/CHANGELOG] first, then the refined message inside [REFINED]...[/REFINED]. No other text outside these tags.
+Remember: output [CHANGELOG]...[/CHANGELOG] first, then the ${isUserMessage ? 'enhanced' : 'refined'} message inside [REFINED]...[/REFINED]. No other text outside these tags.
 
 Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
 
-        console.debug(`${LOG_PREFIX} [prompt] System prompt (${systemPrompt.length} chars):`, systemPrompt.substring(0, 200) + '…');
-        console.debug(`${LOG_PREFIX} [prompt] Full refinement prompt (${promptText.length} chars):`);
+        console.debug(`${LOG_PREFIX} [prompt] System prompt (${systemPrompt.length} chars):`, systemPrompt.substring(0, 200) + '\u2026');
+        console.debug(`${LOG_PREFIX} [prompt] Full ${actionVerb} prompt (${promptText.length} chars):`);
         console.debug(promptText);
 
         // Call refinement via the appropriate mode
@@ -804,7 +886,7 @@ Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
             showDiffPopup(originalText, refinedText, changelog);
         }
 
-        toastr.success('Message refined', 'ReDraft');
+        toastr.success(isUserMessage ? 'Message enhanced' : 'Message refined', 'ReDraft');
         playNotificationSound();
         refineSucceeded = true;
         const refineMs = Date.now() - refineStartTime;
@@ -926,37 +1008,57 @@ function rerenderMessage(messageIndex) {
 // ─── Per-Message Buttons ────────────────────────────────────────────
 
 function addMessageButtons() {
+    const settings = getSettings();
+
     document.querySelectorAll('.mes[is_system="false"]').forEach(mesEl => {
         const isUser = mesEl.getAttribute('is_user') === 'true';
-        if (isUser) return;
-
         const mesId = parseInt(mesEl.getAttribute('mesid'), 10);
         const buttonsRow = mesEl.querySelector('.mes_buttons');
         if (!buttonsRow) return;
 
-        if (buttonsRow.querySelector('.redraft-msg-btn')) return;
+        if (isUser) {
+            if (!settings.userEnhanceEnabled) return;
+            if (buttonsRow.querySelector('.redraft-enhance-btn')) return;
 
-        const btn = document.createElement('div');
-        btn.classList.add('mes_button', 'redraft-msg-btn');
-        btn.title = 'ReDraft';
-        btn.innerHTML = '<i class="fa-solid fa-pen-nib"></i>';
-        btn.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
-            redraftMessage(mesId);
-        }, 500, { leading: true, trailing: false }));
+            const btn = document.createElement('div');
+            btn.classList.add('mes_button', 'redraft-enhance-btn');
+            btn.title = 'Enhance (ReDraft)';
+            btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i>';
+            btn.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
+                redraftMessage(mesId);
+            }, 500, { leading: true, trailing: false }));
 
-        buttonsRow.prepend(btn);
+            buttonsRow.prepend(btn);
+        } else {
+            if (buttonsRow.querySelector('.redraft-msg-btn')) return;
+
+            const btn = document.createElement('div');
+            btn.classList.add('mes_button', 'redraft-msg-btn');
+            btn.title = 'ReDraft';
+            btn.innerHTML = '<i class="fa-solid fa-pen-nib"></i>';
+            btn.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
+                redraftMessage(mesId);
+            }, 500, { leading: true, trailing: false }));
+
+            buttonsRow.prepend(btn);
+        }
     });
 }
 
 function setMessageButtonLoading(messageIndex, loading) {
-    const btn = document.querySelector(`.mes[mesid="${messageIndex}"] .redraft-msg-btn`);
+    const aiBtn = document.querySelector(`.mes[mesid="${messageIndex}"] .redraft-msg-btn`);
+    const userBtn = document.querySelector(`.mes[mesid="${messageIndex}"] .redraft-enhance-btn`);
+    const btn = aiBtn || userBtn;
     if (!btn) return;
+    const isEnhance = btn.classList.contains('redraft-enhance-btn');
     if (loading) {
         btn.classList.add('redraft-loading');
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
     } else {
         btn.classList.remove('redraft-loading');
-        btn.innerHTML = '<i class="fa-solid fa-pen-nib"></i>';
+        btn.innerHTML = isEnhance
+            ? '<i class="fa-solid fa-wand-magic-sparkles"></i>'
+            : '<i class="fa-solid fa-pen-nib"></i>';
     }
 }
 
@@ -1530,6 +1632,27 @@ function bindSettingsUI() {
         });
     }
 
+    // User enhance toggle
+    const userEnhanceEl = document.getElementById('redraft_user_enhance');
+    if (userEnhanceEl) {
+        userEnhanceEl.checked = initSettings.userEnhanceEnabled;
+        userEnhanceEl.addEventListener('change', (e) => {
+            getSettings().userEnhanceEnabled = e.target.checked;
+            saveSettings();
+            addMessageButtons();
+        });
+    }
+
+    // User auto-enhance toggle
+    const userAutoEnhanceEl = document.getElementById('redraft_user_auto_enhance');
+    if (userAutoEnhanceEl) {
+        userAutoEnhanceEl.checked = initSettings.userAutoEnhance;
+        userAutoEnhanceEl.addEventListener('change', (e) => {
+            getSettings().userAutoEnhance = e.target.checked;
+            saveSettings();
+        });
+    }
+
     // Show diff after refinement toggle
     const diffEl = document.getElementById('redraft_show_diff');
     if (diffEl) {
@@ -1588,12 +1711,22 @@ function bindSettingsUI() {
         });
     }
 
-    // System prompt
+    // System prompt (AI messages)
     const promptEl = document.getElementById('redraft_system_prompt');
     if (promptEl) {
         promptEl.value = initSettings.systemPrompt || '';
         promptEl.addEventListener('input', (e) => {
             getSettings().systemPrompt = e.target.value;
+            saveSettings();
+        });
+    }
+
+    // System prompt (user messages)
+    const userPromptEl = document.getElementById('redraft_user_system_prompt');
+    if (userPromptEl) {
+        userPromptEl.value = initSettings.userSystemPrompt || '';
+        userPromptEl.addEventListener('input', (e) => {
+            getSettings().userSystemPrompt = e.target.value;
             saveSettings();
         });
     }
@@ -1799,6 +1932,18 @@ function bindSettingsUI() {
                 redraftMessage(lastAiIdx);
             } else {
                 toastr.warning('No AI message found to refine', 'ReDraft');
+            }
+        }, 500, { leading: true, trailing: false }));
+    }
+
+    const popoutEnhanceUser = document.getElementById('redraft_popout_enhance_user');
+    if (popoutEnhanceUser) {
+        popoutEnhanceUser.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
+            const lastUserIdx = findLastUserMessageIndex();
+            if (lastUserIdx >= 0) {
+                redraftMessage(lastUserIdx);
+            } else {
+                toastr.warning('No user message found to enhance', 'ReDraft');
             }
         }, 500, { leading: true, trailing: false }));
     }
@@ -2028,9 +2173,31 @@ function findLastAiMessageIndex() {
     return -1;
 }
 
+function findLastUserMessageIndex() {
+    const { chat } = SillyTavern.getContext();
+    if (!chat) return -1;
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (chat[i].is_user && !chat[i].is_system) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 function onCharacterMessageRendered(messageIndex) {
     const settings = getSettings();
     if (!settings.enabled || !settings.autoRefine) return;
+    if (isRefining) return;
+
+    setTimeout(() => {
+        redraftMessage(messageIndex);
+    }, 100);
+}
+
+function onUserMessageRendered(messageIndex) {
+    addMessageButtons();
+    const settings = getSettings();
+    if (!settings.enabled || !settings.userEnhanceEnabled || !settings.userAutoEnhance) return;
     if (isRefining) return;
 
     setTimeout(() => {
@@ -2113,7 +2280,44 @@ function registerSlashCommand() {
         helpString: '<div>Refine a message using ReDraft. Optionally provide a message index, otherwise refines the last AI message.</div>',
     }));
 
-    console.log(`${LOG_PREFIX} Slash command /redraft registered`);
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'enhance',
+        callback: async (namedArgs, unnamedArgs) => {
+            const settings = getSettings();
+            if (!settings.enabled) {
+                toastr.warning('ReDraft is disabled', 'ReDraft');
+                return '';
+            }
+
+            let idx;
+            const rawArg = unnamedArgs?.toString()?.trim();
+            if (rawArg && !isNaN(rawArg)) {
+                idx = parseInt(rawArg, 10);
+            } else {
+                idx = findLastUserMessageIndex();
+            }
+
+            if (idx < 0) {
+                toastr.warning('No user message found to enhance', 'ReDraft');
+                return '';
+            }
+
+            await redraftMessage(idx);
+            return '';
+        },
+        aliases: [],
+        returns: 'empty string',
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: 'Message index to enhance (defaults to last user message)',
+                typeList: [ARGUMENT_TYPE.NUMBER],
+                isRequired: false,
+            }),
+        ],
+        helpString: '<div>Enhance a user message using ReDraft. Fixes grammar, matches your persona voice, checks lore. Optionally provide a message index, otherwise enhances the last user message.</div>',
+    }));
+
+    console.log(`${LOG_PREFIX} Slash commands /redraft and /enhance registered`);
 }
 
 // ─── Initialization ─────────────────────────────────────────────────
@@ -2148,6 +2352,19 @@ function registerSlashCommand() {
                 <input type="checkbox" id="redraft_auto_refine" />
                 <span>Auto-refine new AI messages</span>
             </label>
+
+            <hr style="margin: 8px 0; opacity: 0.2;" />
+            <small class="redraft-section-hint" style="margin-bottom: 4px;">Enhance your own messages — fix grammar, match your persona voice, check lore.</small>
+            <label class="checkbox_label" title="Show an Enhance button on your messages. Uses your persona page for character voice matching.">
+                <input type="checkbox" id="redraft_user_enhance" />
+                <span>Enhance user messages</span>
+            </label>
+            <label class="checkbox_label" title="Automatically enhance your messages right after you send them.">
+                <input type="checkbox" id="redraft_user_auto_enhance" />
+                <span>Auto-enhance after sending</span>
+            </label>
+            <hr style="margin: 8px 0; opacity: 0.2;" />
+
             <label class="checkbox_label">
                 <input type="checkbox" id="redraft_show_diff" />
                 <span>Show diff after refinement</span>
@@ -2376,10 +2593,16 @@ function registerSlashCommand() {
                         <span>Protect font/color tags</span>
                     </label>
                     <div class="redraft-form-group">
-                        <label for="redraft_system_prompt">System Prompt Override</label>
+                        <label for="redraft_system_prompt">System Prompt Override (AI messages)</label>
                         <textarea id="redraft_system_prompt" class="text_pole textarea_compact" rows="3"
                             style="resize:vertical;field-sizing:content;max-height:50vh;"
                             placeholder="Leave blank for default refinement prompt..."></textarea>
+                    </div>
+                    <div class="redraft-form-group">
+                        <label for="redraft_user_system_prompt">System Prompt Override (user messages)</label>
+                        <textarea id="redraft_user_system_prompt" class="text_pole textarea_compact" rows="3"
+                            style="resize:vertical;field-sizing:content;max-height:50vh;"
+                            placeholder="Leave blank for default user enhancement prompt..."></textarea>
                     </div>
                 </div>
             </div>
@@ -2415,7 +2638,11 @@ function registerSlashCommand() {
         <div id="redraft_popout_status" class="redraft-popout-status"></div>
         <div id="redraft_popout_refine" class="menu_button">
             <i class="fa-solid fa-pen-nib"></i>
-            <span>Refine Last Message</span>
+            <span>Refine Last AI Message</span>
+        </div>
+        <div id="redraft_popout_enhance_user" class="menu_button">
+            <i class="fa-solid fa-wand-magic-sparkles"></i>
+            <span>Enhance Last User Message</span>
         </div>
         <div id="redraft_popout_open_settings" class="menu_button">
             <i class="fa-solid fa-gear"></i>
@@ -2458,9 +2685,11 @@ function registerSlashCommand() {
     // Register events
     eventListenerRefs.messageRendered = () => onMessageRendered();
     eventListenerRefs.charMessageRendered = (idx) => onCharacterMessageRendered(idx);
+    eventListenerRefs.userMessageRendered = (idx) => onUserMessageRendered(idx);
     eventListenerRefs.chatChanged = () => onChatChanged();
 
     eventSource.on(event_types.USER_MESSAGE_RENDERED, eventListenerRefs.messageRendered);
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, eventListenerRefs.userMessageRendered);
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, eventListenerRefs.charMessageRendered);
     eventSource.on(event_types.CHAT_CHANGED, eventListenerRefs.chatChanged);
 
