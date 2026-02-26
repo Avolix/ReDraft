@@ -134,8 +134,39 @@ function findExtensionServerPlugin(stRoot) {
 }
 
 /**
- * If the ReDraft extension was updated within ST, its server-plugin folder may be newer than
- * the installed plugin. Copy those files here so the next restart runs the updated plugin.
+ * Parse SERVER_PLUGIN_VERSION from an index.js file without requiring it.
+ * @param {string} filePath
+ * @returns {string|null} e.g. '1.2.0', or null if unreadable / not found.
+ */
+function parseVersionFromFile(filePath) {
+    try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const match = content.match(/SERVER_PLUGIN_VERSION\s*=\s*['"]([^'"]+)['"]/);
+        return match ? match[1] : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * True when semver string `a` is strictly newer than `b`.
+ */
+function isNewerVersion(a, b) {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+        if ((pa[i] || 0) > (pb[i] || 0)) return true;
+        if ((pa[i] || 0) < (pb[i] || 0)) return false;
+    }
+    return false;
+}
+
+/**
+ * If the ReDraft extension was updated within ST, its server-plugin folder may contain a newer
+ * version than the installed plugin. Copy those files here so the next restart runs the updated
+ * plugin. Uses version-string comparison instead of file timestamps (mtime is unreliable because
+ * fs.copyFileSync sets the destination's mtime to the current time, making the installed copy
+ * appear perpetually "newer" than the source).
  * Does not overwrite config*.json (user credentials).
  */
 function tryUpdateFromExtension() {
@@ -146,16 +177,12 @@ function tryUpdateFromExtension() {
     if (!extensionDir) return;
 
     const extIndex = path.join(extensionDir, 'index.js');
-    const localIndex = path.join(pluginDir, 'index.js');
-    let extMtime;
-    let localMtime;
-    try {
-        extMtime = fs.statSync(extIndex).mtimeMs;
-        localMtime = fs.statSync(localIndex).mtimeMs;
-    } catch {
-        return;
-    }
-    if (extMtime <= localMtime) return;
+    const extVersion = parseVersionFromFile(extIndex);
+    if (!extVersion) return;
+
+    if (!isNewerVersion(extVersion, SERVER_PLUGIN_VERSION)) return;
+
+    console.log(`[${MODULE_NAME}] Extension has server plugin v${extVersion} (installed: v${SERVER_PLUGIN_VERSION}). Updating...`);
 
     const filesToCopy = ['index.js', 'config.json.example', 'lib/utils.js'];
     for (const file of filesToCopy) {
