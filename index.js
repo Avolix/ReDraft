@@ -930,29 +930,17 @@ async function undoRedraft(messageIndex) {
  */
 function rerenderMessage(messageIndex) {
     const context = SillyTavern.getContext();
-    if (!context.chat[messageIndex]) return;
+    const msg = context.chat[messageIndex];
+    if (!msg) return;
 
-    // Prefer ST's built-in updateMessageBlock — handles user vs AI, formatting, etc.
-    if (typeof context.updateMessageBlock === 'function') {
-        const mesElement = document.querySelector(`.mes[mesid="${messageIndex}"]`);
-        if (mesElement) {
-            context.updateMessageBlock(messageIndex, mesElement);
-            return;
-        }
-    }
-
-    // Fallback: manual re-render with correct isUser flag
     const mesBlock = document.querySelector(`.mes[mesid="${messageIndex}"] .mes_text`);
-    if (mesBlock) {
-        const msg = context.chat[messageIndex];
-        const { messageFormatting } = context;
-        if (typeof messageFormatting === 'function') {
-            const isUser = !!msg.is_user;
-            const isSystem = !!msg.is_system;
-            mesBlock.innerHTML = messageFormatting(msg.mes, msg.name, isSystem, isUser, messageIndex);
-        } else {
-            mesBlock.textContent = msg.mes;
-        }
+    if (!mesBlock) return;
+
+    const { messageFormatting } = context;
+    if (typeof messageFormatting === 'function') {
+        mesBlock.innerHTML = messageFormatting(msg.mes, msg.name, !!msg.is_system, !!msg.is_user, messageIndex);
+    } else {
+        mesBlock.textContent = msg.mes;
     }
 }
 
@@ -2449,13 +2437,22 @@ Rules:\n${rulesText}\n\nOriginal message:\n${stripped}`;
         await saveMeta();
 
         // Re-render the user message so the UI shows the enhanced version.
-        // Use immediate + deferred re-render to handle ST's own rendering pipeline.
-        rerenderMessage(realIdx);
-        setTimeout(() => {
+        // The DOM element may not exist yet during interception, so poll until it appears.
+        const applyRerender = () => {
             rerenderMessage(realIdx);
             showUndoButton(realIdx);
             showDiffButton(realIdx, chatMetadata['redraft_originals'][realIdx], refinedText, changelog);
-        }, 200);
+        };
+
+        const mesBlock = document.querySelector(`.mes[mesid="${realIdx}"] .mes_text`);
+        if (mesBlock) {
+            applyRerender();
+        }
+        // Deferred re-render: ST's own rendering may overwrite during generation setup
+        const delays = [150, 500, 1500];
+        for (const ms of delays) {
+            setTimeout(applyRerender, ms);
+        }
 
         console.log(`${LOG_PREFIX} [pre-send] User message ${realIdx} enhanced successfully`);
         toastr.clear();
