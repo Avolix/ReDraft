@@ -190,6 +190,12 @@
     margin-top: 2px;
 }
 
+.redraft-autosave-flash {
+    color: var(--active) !important;
+    opacity: 1 !important;
+    transition: color 300ms ease, opacity 300ms ease;
+}
+
 .redraft-section-hint {
     display: block;
     opacity: 0.5;

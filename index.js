@@ -1680,15 +1680,29 @@ function bindSettingsUI() {
         fetchModelsBtn.addEventListener('click', fetchModels);
     }
 
-    // Model select dropdown (mobile-friendly alternative to datalist)
+    // Model text input — auto-save on change (debounced for typing)
+    const modelInput = document.getElementById('redraft_model');
+    if (modelInput) {
+        modelInput.addEventListener('change', () => scheduleAutoSave(true));
+        modelInput.addEventListener('input', () => scheduleAutoSave());
+    }
+
+    // Model select dropdown (mobile-friendly alternative to datalist) — auto-save immediately
     const modelSelect = document.getElementById('redraft_model_select');
     if (modelSelect) {
         modelSelect.addEventListener('change', (e) => {
-            const modelInput = document.getElementById('redraft_model');
-            if (modelInput && e.target.value) {
-                modelInput.value = e.target.value;
+            const input = document.getElementById('redraft_model');
+            if (input && e.target.value) {
+                input.value = e.target.value;
             }
+            scheduleAutoSave(true);
         });
+    }
+
+    // Max tokens — auto-save on change
+    const maxTokensInput = document.getElementById('redraft_max_tokens');
+    if (maxTokensInput) {
+        maxTokensInput.addEventListener('change', () => scheduleAutoSave(true));
     }
 
     // Import custom rules button
@@ -1830,6 +1844,62 @@ function bindSettingsUI() {
 
     // Set initial connection mode UI
     updateConnectionModeUI();
+}
+
+/**
+ * Auto-save connection config (model, URL, maxTokens) without requiring the Save button.
+ * Only fires when the plugin is already configured (has a saved API key).
+ * Does NOT send the API key — the server keeps the existing one.
+ */
+let _autoSaveTimeout = null;
+
+function scheduleAutoSave(immediate = false) {
+    if (_autoSaveTimeout) clearTimeout(_autoSaveTimeout);
+    if (immediate) {
+        autoSaveConnection();
+    } else {
+        _autoSaveTimeout = setTimeout(autoSaveConnection, 800);
+    }
+}
+
+async function autoSaveConnection() {
+    if (!pluginAvailable) return;
+
+    const apiUrl = document.getElementById('redraft_api_url')?.value?.trim();
+    const model = document.getElementById('redraft_model')?.value?.trim();
+    const maxTokens = document.getElementById('redraft_max_tokens')?.value;
+
+    if (!apiUrl || !model) return;
+
+    const payload = {
+        apiUrl,
+        model,
+        maxTokens: maxTokens ? parseInt(maxTokens, 10) : 4096,
+    };
+
+    try {
+        await pluginRequest('/config', 'POST', payload);
+        await checkPluginStatus();
+        updatePopoutStatus();
+        showAutoSaveIndicator();
+    } catch {
+        // Silent — initial setup (no key yet) will 400, user uses Save button for that
+    }
+}
+
+function showAutoSaveIndicator() {
+    const info = document.getElementById('redraft_connection_info');
+    if (!info) return;
+    const prev = info.textContent;
+    info.textContent = '\u2713 Saved';
+    info.classList.add('redraft-autosave-flash');
+    setTimeout(() => {
+        info.classList.remove('redraft-autosave-flash');
+        // Restore real status if it hasn't been changed by something else
+        if (info.textContent === '\u2713 Saved') {
+            checkPluginStatus();
+        }
+    }, 1500);
 }
 
 async function saveConnection() {
@@ -2172,9 +2242,9 @@ function registerSlashCommand() {
                                 max="128000" />
                         </div>
                         <div class="redraft-button-row">
-                            <div id="redraft_save_connection" class="menu_button" title="Save credentials to the server plugin (stored on disk, not in browser)">
-                                <i class="fa-solid fa-save"></i>
-                                <span>Save</span>
+                            <div id="redraft_save_connection" class="menu_button" title="Save API key (other fields auto-save). Credentials are stored on disk, not in browser.">
+                                <i class="fa-solid fa-key"></i>
+                                <span>Save Key</span>
                             </div>
                             <div id="redraft_test_connection" class="menu_button" title="Verify plugin is reachable and configured">
                                 <i class="fa-solid fa-circle-check"></i>
