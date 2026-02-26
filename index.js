@@ -406,13 +406,15 @@ function playNotificationSound() {
 
 /**
  * Call the server plugin API.
- * Uses ST's request headers (including CSRF token) so requests aren't rejected as 403.
+ * Uses ST's request headers (including CSRF token) and sends credentials (cookies) so
+ * multi-user instances treat the request as the current user and don't return a login page.
  * Handles HTML responses (e.g. 404/login pages) with a clear error instead of "is not valid JSON".
  */
 async function pluginRequest(endpoint, method = 'GET', body = null) {
     const { getRequestHeaders } = SillyTavern.getContext();
     const options = {
         method,
+        credentials: 'same-origin', // send cookies so auth/session is sent on multi-user instances
         headers: getRequestHeaders ? getRequestHeaders() : { 'Content-Type': 'application/json' },
     };
     if (body) {
@@ -434,8 +436,11 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
                 : url;
             const isLocalhost = typeof window !== 'undefined' && window.location &&
                 /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(window.location.origin);
+            const authHint = (response.status === 401 || response.status === 403 || response.redirected)
+                ? ' The server may have returned a login page — refresh the page and try again; if you\'re on a multi-user instance, your session might not have been sent.'
+                : '';
             throw new Error(
-                `Server returned a web page instead of JSON. ` +
+                `Server returned a web page instead of JSON.` + authHint + ' ' +
                 (isLocalhost
                     ? 'On localhost this usually means the ReDraft server plugin is not installed or not enabled. '
                     : 'The ReDraft plugin may not be installed or the URL may be wrong. ') +
