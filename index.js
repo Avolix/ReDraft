@@ -34,7 +34,7 @@ import {
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
-const EXTENSION_VERSION = '2.4.0';
+const EXTENSION_VERSION = '2.4.1';
 
 /**
  * Base URL path for the ReDraft server plugin API. Thin adapter over the

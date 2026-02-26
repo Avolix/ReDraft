@@ -14,7 +14,7 @@ const { getUserId, getConfigPath: _getConfigPath, maskKey, validateApiUrl, sanit
 const CONFIG_DIR = __dirname;
 const MODULE_NAME = 'redraft';
 /** Server plugin version (semver). Bump when releasing server-plugin changes; client shows this in settings. */
-const SERVER_PLUGIN_VERSION = '1.2.0';
+const SERVER_PLUGIN_VERSION = '1.2.1';
 const REQUEST_TIMEOUT_MS = 120_000;
 const MAX_BODY_SIZE_BYTES = 512 * 1024; // 512 KB
 const MAX_LLM_ATTEMPTS = 3;

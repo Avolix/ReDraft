@@ -4,6 +4,15 @@ All notable user-facing changes to ReDraft are documented here.
 
 ---
 
+## 2.4.1
+
+### Fixes
+
+- Fixed server plugin auto-update never triggering — version comparison now uses semantic versioning instead of unreliable file timestamps.
+- Fixed `install.js` failing to run — the installer was ESM while its directory's `package.json` forced CommonJS, causing a syntax error on every install attempt. The installer is now CommonJS.
+
+---
+
 ## 2.4.0
 
 **Separate User Message PoV** — user message enhancement now has its own Point of View setting.
