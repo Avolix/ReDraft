@@ -399,7 +399,12 @@ async function init(router) {
             if (!response.ok) {
                 const body = await response.text();
                 const sanitized = sanitizeError(body);
-                return res.status(502).json({ error: `API returned ${response.status}: ${sanitized.slice(0, 200)}` });
+                const hint = response.status === 401
+                    ? ' Your API key may be invalid.'
+                    : response.status === 403
+                        ? ' Your API key may not have permission to list models.'
+                        : '';
+                return res.status(502).json({ error: `Models API returned ${response.status} from ${config.apiUrl}.${hint} ${sanitized.slice(0, 150)}`.trim() });
             }
 
             const data = await response.json();
@@ -412,10 +417,11 @@ async function init(router) {
             return res.json({ models });
         } catch (err) {
             if (err.name === 'AbortError') {
-                return res.status(504).json({ error: 'Models request timed out' });
+                return res.status(504).json({ error: `Models request to ${config?.apiUrl || 'API'} timed out after 10s. Check that the API URL is correct and reachable.` });
             }
-            console.error(`[${MODULE_NAME}] Models fetch error:`, sanitizeError(err.message, config));
-            return res.status(500).json({ error: 'Failed to fetch models' });
+            const safeMsg = sanitizeError(err.message, config);
+            console.error(`[${MODULE_NAME}] Models fetch error from ${config?.apiUrl}:`, safeMsg);
+            return res.status(500).json({ error: `Failed to fetch models from ${config?.apiUrl || 'API'}: ${safeMsg.slice(0, 150)}` });
         }
     });
 
@@ -500,7 +506,22 @@ async function init(router) {
             if (!response.ok) {
                 const sanitized = sanitizeError(rawBody, config);
                 console.error(`[${MODULE_NAME}] LLM API error (${response.status}) for model "${config.model}" at ${config.apiUrl}:`, sanitized);
-                return res.status(502).json({ error: `LLM API returned ${response.status} for model "${config.model}": ${sanitized.slice(0, 200)}` });
+                const statusHints = {
+                    400: 'Bad request — the model name may be invalid or the request format is not supported by this API.',
+                    401: 'Unauthorized — your API key is invalid, expired, or missing.',
+                    402: 'Payment required — your API account may be out of credits.',
+                    403: 'Forbidden — your API key does not have access to this model.',
+                    404: 'Not found — the model name or API endpoint may be incorrect.',
+                    429: 'Rate limited — too many requests. Wait a moment and try again.',
+                    500: 'Internal server error on the API side — try again later.',
+                    502: 'Bad gateway — the API\'s upstream provider returned an error.',
+                    503: 'Service unavailable — the model\'s backend is temporarily down. Try again or use a different model.',
+                };
+                const hint = statusHints[response.status] || '';
+                const detail = sanitized.slice(0, 200);
+                return res.status(502).json({
+                    error: `LLM API returned ${response.status} for model "${config.model}"${hint ? ': ' + hint : ''}${detail ? ' (' + detail + ')' : ''}`,
+                });
             }
 
             let data;
@@ -509,28 +530,31 @@ async function init(router) {
             } catch {
                 const trimmed = (rawBody || '').trim();
                 if (trimmed.startsWith('<') || trimmed.toLowerCase().startsWith('<!doctype')) {
-                    console.error(`[${MODULE_NAME}] LLM API returned HTML instead of JSON`);
-                    return res.status(502).json({ error: 'API returned a web page instead of JSON. Check your API URL (e.g. use the API base URL, not a login or docs page).' });
+                    console.error(`[${MODULE_NAME}] LLM API returned HTML instead of JSON for model "${config.model}" at ${config.apiUrl}`);
+                    return res.status(502).json({ error: `API returned a web page instead of JSON for model "${config.model}". Check your API URL — it should be the base URL (e.g. https://openrouter.ai/api/v1), not a login page or docs URL.` });
                 }
-                return res.status(502).json({ error: `API returned invalid JSON: ${trimmed.slice(0, 100)}…` });
+                return res.status(502).json({ error: `API returned invalid JSON for model "${config.model}": ${trimmed.slice(0, 100)}…` });
             }
 
             const text = data?.choices?.[0]?.message?.content;
 
             if (!text) {
-                return res.status(502).json({ error: 'LLM returned an empty or malformed response' });
+                console.error(`[${MODULE_NAME}] LLM returned empty response for model "${config.model}". Raw:`, (rawBody || '').slice(0, 300));
+                return res.status(502).json({ error: `LLM returned an empty or malformed response for model "${config.model}". The model may not support chat completions or the response format was unexpected.` });
             }
 
             return res.json({ text });
 
         } catch (err) {
             if (err.name === 'AbortError') {
-                console.error(`[${MODULE_NAME}] LLM request timed out after ${REQUEST_TIMEOUT_MS}ms`);
-                sendJson(504, { error: 'LLM request timed out' });
+                const model = config?.model || 'unknown';
+                console.error(`[${MODULE_NAME}] LLM request timed out after ${REQUEST_TIMEOUT_MS}ms for model "${model}"`);
+                sendJson(504, { error: `LLM request timed out after ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s for model "${model}". The model may be overloaded — try again or use a faster model.` });
                 return;
             }
-            console.error(`[${MODULE_NAME}] Refine error:`, sanitizeError(err.message, config));
-            sendJson(500, { error: 'Internal error during refinement' });
+            const safeMsg = sanitizeError(err.message, config);
+            console.error(`[${MODULE_NAME}] Refine error for model "${config?.model || 'unknown'}":`, safeMsg);
+            sendJson(500, { error: `Refinement failed: ${safeMsg.slice(0, 200)}` });
         }
     });
 

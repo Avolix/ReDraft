@@ -440,9 +440,11 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
                 /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(window.location.origin);
             let hint = '';
             if (response.status === 502) {
-                hint = ' 502 Bad Gateway can mean: (1) Proxy timed out — refinement takes 15–30s; increase Caddy read/timeout for the ST backend to at least 60s. (2) ST or the plugin closed the connection or threw — if you didn\'t change Caddy, check the SillyTavern terminal/console when you trigger refine; any error or stack trace there is the real cause. Opening the request URL in a browser does a GET (refine expects POST), so "Not found" there is normal.';
+                hint = ' 502 Bad Gateway — your reverse proxy may have timed out before ST could respond. Check the SillyTavern terminal for the real error. If you use Caddy/nginx, increase the proxy timeout to at least 90s.';
             } else if (response.status === 401 || response.status === 403 || response.redirected) {
-                hint = ' The server may have returned a login page — refresh the page and try again; if you\'re on a multi-user instance, your session might not have been sent.';
+                hint = ' The server returned a login/auth page — refresh the page and try again. On multi-user instances, your session may have expired.';
+            } else if (response.status === 404) {
+                hint = ' The plugin endpoint was not found — the server plugin may not be installed or ST needs a restart.';
             }
             throw new Error(
                 `Server returned a web page instead of JSON.` + hint +
@@ -812,16 +814,57 @@ Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
     } catch (err) {
         console.error(`${LOG_PREFIX} Refinement failed:`, err.message);
         const msg = err.message || '';
-        if (msg.includes('not configured') || msg.includes('503')) {
+
+        if (msg.includes('not configured') || msg.includes('Please set up API credentials')) {
             toastr.error(
                 'ReDraft plugin isn\'t configured. In ReDraft settings, enter API URL, Key, and Model under Separate LLM, then click Save Connection.',
                 'ReDraft',
                 { timeOut: 8000 }
             );
-        } else if (msg.includes('timed out') || msg.includes('504')) {
-            toastr.error('Refinement timed out. Try a shorter message or check your API/model.', 'ReDraft');
+        } else if (msg.includes('timed out')) {
+            toastr.error(
+                'Refinement timed out — the LLM took too long to respond. Try a shorter message, a faster model, or check your API provider\'s status page.',
+                'ReDraft',
+                { timeOut: 8000 }
+            );
+        } else if (msg.includes('returned 401') || msg.includes('Unauthorized')) {
+            toastr.error(
+                'API authentication failed (401). Your API key may be invalid or expired — check your key in ReDraft Connection settings.',
+                'ReDraft',
+                { timeOut: 8000 }
+            );
+        } else if (msg.includes('returned 402') || msg.includes('Payment Required') || msg.includes('insufficient')) {
+            toastr.error(
+                'API billing error (402). Your account may be out of credits — check your balance on your API provider\'s dashboard.',
+                'ReDraft',
+                { timeOut: 8000 }
+            );
+        } else if (msg.includes('returned 429') || msg.includes('rate limit') || msg.includes('Rate limit')) {
+            toastr.error(
+                'Rate limited by the API (429). Wait a moment and try again, or switch to a less busy model.',
+                'ReDraft',
+                { timeOut: 6000 }
+            );
+        } else if (msg.includes('returned 404')) {
+            toastr.error(
+                'Model or endpoint not found (404). Check that your model name and API URL are correct in ReDraft Connection settings.',
+                'ReDraft',
+                { timeOut: 8000 }
+            );
+        } else if (msg.includes('returned 503')) {
+            toastr.error(
+                'The API returned Service Unavailable (503). The model\'s backend is temporarily down — try again in a moment or switch to a different model.',
+                'ReDraft',
+                { timeOut: 8000 }
+            );
+        } else if (msg.includes('web page instead of JSON')) {
+            toastr.error(
+                'Server returned HTML instead of JSON. If you use a reverse proxy, check its timeout settings (need at least 90s). Otherwise check the SillyTavern terminal for errors.',
+                'ReDraft',
+                { timeOut: 10000 }
+            );
         } else {
-            toastr.error(msg || 'Refinement failed', 'ReDraft');
+            toastr.error(msg || 'Refinement failed — check the browser console for details.', 'ReDraft', { timeOut: 8000 });
         }
     } finally {
         isRefining = false;
