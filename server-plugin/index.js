@@ -9,6 +9,7 @@
  */
 const path = require('path');
 const fs = require('fs');
+const { getUserId, getConfigPath: _getConfigPath, maskKey, validateApiUrl, sanitizeError } = require('./lib/utils');
 
 const CONFIG_DIR = __dirname;
 const MODULE_NAME = 'redraft';
@@ -22,35 +23,9 @@ const RETRY_BASE_DELAY_MS = 2000;
 /** Per-user config cache: key is userId string or '__shared' for single-user. */
 const configCache = new Map();
 
-/**
- * Get the current user id from the request when running in multi-user ST.
- * SillyTavern may set req.session.userId, req.user.id, or similar when enableUserAccounts is true.
- * Never throws — returns null on any error so plugin always stays responsive.
- * @param {import('express').Request} req
- * @returns {string|null} Sanitized user id for config filename, or null for shared config.
- */
-function getUserId(req) {
-    try {
-        if (!req) return null;
-        const raw = (req.session && (req.session.userId ?? req.session.user_id))
-            || (req.user && (req.user.id ?? req.user.userId))
-            || (req.headers && (req.headers['x-user-id'] || req.headers['x-user_id']));
-        if (raw == null || typeof raw !== 'string') return null;
-        const sanitized = String(raw).toLowerCase().replace(/[^a-z0-9_-]/g, '');
-        return sanitized.length > 0 ? sanitized : null;
-    } catch (_) {
-        return null;
-    }
-}
-
-/**
- * Config file path for a user (or shared config when userId is null).
- * @param {string|null} userId
- * @returns {string}
- */
+/** Bind getConfigPath to this plugin's CONFIG_DIR. */
 function getConfigPath(userId) {
-    const filename = userId ? `config.${userId}.json` : 'config.json';
-    return path.join(CONFIG_DIR, filename);
+    return _getConfigPath(CONFIG_DIR, userId);
 }
 
 /**
@@ -99,78 +74,7 @@ function readConfig() {
     return readConfigForUser(null);
 }
 
-/**
- * Mask an API key for safe display.
- * @param {string} key
- * @returns {string}
- */
-function maskKey(key) {
-    if (!key || key.length < 8) return '****';
-    return key.slice(0, 3) + '...' + key.slice(-4);
-}
-
-/**
- * Validate that a URL is a safe external API endpoint (not an internal/private address).
- * Prevents SSRF by blocking file://, private IPs, localhost, and link-local addresses.
- * @param {string} urlString
- * @returns {{ valid: boolean, error?: string }}
- */
-function validateApiUrl(urlString) {
-    let parsed;
-    try {
-        parsed = new URL(urlString);
-    } catch {
-        return { valid: false, error: 'Invalid URL format' };
-    }
-
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-        return { valid: false, error: `Unsupported protocol "${parsed.protocol}" — only http: and https: are allowed` };
-    }
-
-    const hostname = parsed.hostname.toLowerCase();
-
-    if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
-        return { valid: false, error: 'localhost URLs are not allowed — use an external API endpoint' };
-    }
-
-    // Block private/reserved IPv4 and IPv6 ranges
-    const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (ipv4Match) {
-        const [, a, b, c] = ipv4Match.map(Number);
-        const blocked =
-            a === 127 ||                              // 127.0.0.0/8 loopback
-            a === 10 ||                               // 10.0.0.0/8 private
-            (a === 172 && b >= 16 && b <= 31) ||      // 172.16.0.0/12 private
-            (a === 192 && b === 168) ||                // 192.168.0.0/16 private
-            (a === 169 && b === 254) ||                // 169.254.0.0/16 link-local
-            a === 0;                                   // 0.0.0.0/8
-
-        if (blocked) {
-            return { valid: false, error: `Private/internal IP addresses are not allowed (${hostname})` };
-        }
-    }
-
-    if (hostname === '::1' || hostname === '[::1]' ||
-        hostname.startsWith('fc') || hostname.startsWith('fd') ||
-        hostname.startsWith('fe80')) {
-        return { valid: false, error: `Private/internal IPv6 addresses are not allowed (${hostname})` };
-    }
-
-    return { valid: true };
-}
-
-/**
- * Sanitize error messages to strip any credential fragments.
- * @param {string} message
- * @param {object|null} [config] Config object whose apiKey to redact (optional, for per-request safety).
- * @returns {string}
- */
-function sanitizeError(message, config) {
-    if (config && config.apiKey && message.includes(config.apiKey)) {
-        message = message.replace(new RegExp(config.apiKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '[REDACTED]');
-    }
-    return message;
-}
+// maskKey, validateApiUrl, sanitizeError are imported from ./lib/utils.js
 
 /**
  * Scan ST's data and legacy directories for the ReDraft extension's server-plugin folder.

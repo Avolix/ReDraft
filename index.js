@@ -7,23 +7,32 @@
  *   - "plugin" mode: Proxies through a server plugin to a separate LLM
  */
 
+import {
+    getPluginBaseUrl as _getPluginBaseUrl,
+    compileRules as _compileRules,
+    stripProtectedBlocks,
+    restoreProtectedBlocks,
+    parseChangelog,
+    detectPov,
+    tokenize,
+    lcsTable,
+    computeWordDiff,
+} from './lib/text-utils.js';
+
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
 const EXTENSION_VERSION = '2.1';
 
 /**
- * Base URL path for the ReDraft server plugin API. Works at root (/) and when ST
- * is behind a reverse proxy at a subpath (e.g. /tavern, /st). Uses the first path
- * segment as the app base when present so /tavern/... and /tavern/chat/... both
- * hit /tavern/api/plugins/redraft.
+ * Base URL path for the ReDraft server plugin API. Thin adapter over the
+ * pure implementation in lib/text-utils.js.
  */
 function getPluginBaseUrl() {
-    if (typeof window === 'undefined' || !window.location) return '/api/plugins/redraft';
-    const pathname = (window.location.pathname || '/').replace(/\/$/, '') || '/';
-    const segments = pathname.split('/').filter(Boolean);
-    const basePath = segments.length > 0 ? '/' + segments[0] : '';
-    return basePath + '/api/plugins/redraft';
+    const pathname = (typeof window !== 'undefined' && window.location)
+        ? window.location.pathname
+        : undefined;
+    return _getPluginBaseUrl(pathname);
 }
 
 
@@ -243,186 +252,27 @@ function saveSettings() {
 
 /**
  * Compile active rules into a numbered list string.
+ * Delegates to lib/text-utils.js and adds debug logging.
  */
 function compileRules(settings) {
-    const rules = [];
-
-    // Built-in rules — emit detailed prompts, not labels
-    for (const [key, rule] of Object.entries(BUILTIN_RULES)) {
-        if (settings.builtInRules[key]) {
-            rules.push(rule.prompt);
-            console.debug(`${LOG_PREFIX} [rules] Built-in ON: ${key}`);
-        } else {
-            console.debug(`${LOG_PREFIX} [rules] Built-in OFF: ${key}`);
-        }
+    for (const key of Object.keys(BUILTIN_RULES)) {
+        console.debug(`${LOG_PREFIX} [rules] Built-in ${settings.builtInRules[key] ? 'ON' : 'OFF'}: ${key}`);
     }
-
-    // Custom rules in order
     for (let i = 0; i < settings.customRules.length; i++) {
         const rule = settings.customRules[i];
         if (rule.enabled && rule.text && rule.text.trim()) {
-            rules.push(rule.text.trim());
             console.debug(`${LOG_PREFIX} [rules] Custom #${i} ON: "${rule.text.trim().substring(0, 80)}${rule.text.trim().length > 80 ? '…' : ''}"`);
         } else {
             console.debug(`${LOG_PREFIX} [rules] Custom #${i} SKIPPED (enabled=${rule.enabled}, text=${JSON.stringify(rule.text?.substring?.(0, 40) || rule.text)})`);
         }
     }
-
-    if (rules.length === 0) {
-        rules.push('Improve the overall quality of the message');
-        console.debug(`${LOG_PREFIX} [rules] No active rules — using fallback`);
-    }
-
-    const compiled = rules.map((r, i) => `${i + 1}. ${r}`).join('\n');
-    console.debug(`${LOG_PREFIX} [rules] Compiled ${rules.length} rules total`);
+    const compiled = _compileRules(settings, BUILTIN_RULES);
+    console.debug(`${LOG_PREFIX} [rules] Compiled rules`);
     return compiled;
 }
 
-/**
- * Strip structured content from text, replacing with placeholders.
- * Protects code fences, HTML/XML tags, and bracket-delimited blocks
- * from being mangled by the refinement LLM.
- * @param {string} text - Message text
- * @param {{ protectFontTags?: boolean }} [options] - When protectFontTags is true, also protect <font>...</font> (e.g. HexColor)
- * Returns { stripped, blocks } where blocks is the array of original content.
- */
-function stripProtectedBlocks(text, options = {}) {
-    const blocks = [];
-    let result = text;
-
-    // 1. Code fences: ```...``` (with or without language tag)
-    result = result.replace(/```[\s\S]*?```/g, (match) => {
-        blocks.push(match);
-        return `[PROTECTED_${blocks.length - 1}]`;
-    });
-
-    // 2. HTML block-level elements only (not inline formatting like em, span, b, i)
-    //    Protects: details, div, table, section, aside, article, nav, pre, fieldset, figure, timeline
-    //    Also protects custom/extension elements (tags with hyphens or underscores, e.g. <sim-tracker>, <lumia_ooc>)
-    const blockTags = 'details|div|table|section|aside|article|nav|pre|fieldset|figure|timeline';
-    const blockRegex = new RegExp(
-        `<((?:${blockTags}|\\w+[-_]\\w[\\w-]*))(\\b[^>]*)>[\\s\\S]*?<\\/\\1>`, 'gi'
-    );
-    result = result.replace(blockRegex, (match) => {
-        blocks.push(match);
-        return `[PROTECTED_${blocks.length - 1}]`;
-    });
-
-    // 3. Bracket-delimited blocks: [TAG]...[/TAG]
-    result = result.replace(/\[([A-Z_]+)\][\s\S]*?\[\/\1\]/gi, (match, tag) => {
-        // Don't strip our own CHANGELOG or PROTECTED tags
-        if (tag.toUpperCase() === 'CHANGELOG' || tag.toUpperCase().startsWith('PROTECTED')) return match;
-        blocks.push(match);
-        return `[PROTECTED_${blocks.length - 1}]`;
-    });
-
-    // 4. Optional: <font ...>...</font> (e.g. HexColor). Best-effort for simple, non-nested usage.
-    if (options.protectFontTags) {
-        result = result.replace(/<font[^>]*>[\s\S]*?<\/font>/gi, (match) => {
-            blocks.push(match);
-            return `[PROTECTED_${blocks.length - 1}]`;
-        });
-    }
-
-    return { stripped: result, blocks };
-}
-
-/**
- * Restore protected blocks from placeholders.
- * Handles both [PROTECTED_N] (replaced with block content) and [/PROTECTED_N]
- * (stray closing tags some LLMs output — removed so they don't leak into the message).
- */
-function restoreProtectedBlocks(text, blocks) {
-    // Replace placeholders that the LLM kept intact with the original block content
-    let result = text.replace(/\[PROTECTED_(\d+)\]/g, (_, idx) => {
-        return blocks[parseInt(idx, 10)] || '';
-    });
-
-    // Remove any [/PROTECTED_N] that the LLM output (e.g. treating placeholders as paired tags)
-    result = result.replace(/\[\/PROTECTED_(\d+)\]/g, '');
-
-    // Safety net: if the LLM dropped any placeholders, append the missing content
-    // so protected blocks are never permanently lost
-    for (let i = 0; i < blocks.length; i++) {
-        if (!text.includes(`[PROTECTED_${i}]`)) {
-            result = result + '\n' + blocks[i];
-        }
-    }
-
-    return result;
-}
-
-/**
- * Parse the LLM response, extracting changelog and refined message.
- * Returns { changelog, refined }.
- *
- * Extraction priority:
- *   1. [REFINED]...[/REFINED] tags — positive extraction, ignores all reasoning
- *   2. [CHANGELOG]...[/CHANGELOG] tags — takes text after the block
- *   3. Fallback — uses entire response as refined text
- */
-function parseChangelog(responseText) {
-    let changelog = null;
-    let refined;
-
-    // Priority 1: Look for [REFINED]...[/REFINED] — most reliable
-    const refinedMatch = responseText.match(/\[REFINED\]\s*([\s\S]*?)\s*\[\/REFINED\]/i);
-    if (refinedMatch) {
-        refined = refinedMatch[1].trim();
-        // Also extract changelog if present
-        const changelogMatch = responseText.match(/\[CHANGELOG\]\s*([\s\S]*?)\s*\[\/CHANGELOG\]/i);
-        changelog = changelogMatch ? changelogMatch[1].trim() : null;
-    } else {
-        // Priority 2: [CHANGELOG]...[/CHANGELOG] — take only text after the block
-        let match = responseText.match(/\[CHANGELOG\]\s*([\s\S]*?)\s*\[\/CHANGELOG\]/i);
-        if (match) {
-            changelog = match[1].trim();
-            refined = responseText.substring(match.index + match[0].length).trim();
-        } else {
-            // Priority 3: Unclosed [CHANGELOG] tag — split on double-newline
-            match = responseText.match(/\[CHANGELOG\]\s*([\s\S]*?)$/i);
-            if (match) {
-                const remainder = match[1];
-                const splitIdx = remainder.search(/\n\s*\n/);
-                if (splitIdx !== -1) {
-                    changelog = remainder.substring(0, splitIdx).trim();
-                    refined = remainder.substring(splitIdx).trim();
-                }
-            }
-        }
-    }
-
-    // Fallback
-    if (!refined) {
-        refined = responseText.trim();
-    }
-
-    // Always strip any leftover tag markers from the refined text
-    refined = refined.replace(/\[\/?(?:REFINED|CHANGELOG)\]/gi, '').trim();
-
-    return { changelog, refined };
-}
-
-/**
- * Detect the PoV of a text by checking pronoun frequency.
- * Returns '1st' | '1.5' | '2nd' | '3rd' or null if unclear.
- */
-function detectPov(text) {
-    const lower = text.toLowerCase();
-    const first = (lower.match(/\b(i|me|my|myself|mine)\b/g) || []).length;
-    const second = (lower.match(/\b(you|your|yours|yourself)\b/g) || []).length;
-    const third = (lower.match(/\b(he|she|they|him|her|them|his|hers|their|theirs)\b/g) || []).length;
-
-    const total = first + second + third;
-    if (total < 3) return null; // Too short to detect
-
-    // 1.5th: significant first AND second person
-    if (first > total * 0.2 && second > total * 0.2) return '1.5';
-    if (first > second && first > third) return '1st';
-    if (second > first && second > third) return '2nd';
-    if (third > first && third > second) return '3rd';
-    return null;
-}
+// stripProtectedBlocks, restoreProtectedBlocks, parseChangelog, detectPov
+// are imported from ./lib/text-utils.js
 
 /**
  * Play the notification sound when refinement finishes.
@@ -1159,68 +1009,7 @@ function hideDiffButton(messageIndex) {
 }
 
 // ─── Diff Engine ───────────────────────────────────────────────────────────
-
-/**
- * Tokenize text into words and whitespace for diffing.
- * Keeps whitespace as separate tokens so formatting is preserved.
- */
-function tokenize(text) {
-    return text.match(/\S+|\s+/g) || [];
-}
-
-/**
- * Compute LCS (Longest Common Subsequence) table for two token arrays.
- */
-function lcsTable(a, b) {
-    const m = a.length, n = b.length;
-    const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
-    for (let i = 1; i <= m; i++) {
-        for (let j = 1; j <= n; j++) {
-            dp[i][j] = a[i - 1] === b[j - 1]
-                ? dp[i - 1][j - 1] + 1
-                : Math.max(dp[i - 1][j], dp[i][j - 1]);
-        }
-    }
-    return dp;
-}
-
-/**
- * Compute word-level diff between original and refined text.
- * Returns array of {type: 'equal'|'delete'|'insert', text} segments.
- */
-function computeWordDiff(original, refined) {
-    const a = tokenize(original);
-    const b = tokenize(refined);
-    const dp = lcsTable(a, b);
-
-    // Backtrace to build diff
-    const diff = [];
-    let i = a.length, j = b.length;
-    while (i > 0 || j > 0) {
-        if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
-            diff.push({ type: 'equal', text: a[i - 1] });
-            i--; j--;
-        } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-            diff.push({ type: 'insert', text: b[j - 1] });
-            j--;
-        } else {
-            diff.push({ type: 'delete', text: a[i - 1] });
-            i--;
-        }
-    }
-    diff.reverse();
-
-    // Merge consecutive segments of the same type
-    const merged = [];
-    for (const seg of diff) {
-        if (merged.length > 0 && merged[merged.length - 1].type === seg.type) {
-            merged[merged.length - 1].text += seg.text;
-        } else {
-            merged.push({ ...seg });
-        }
-    }
-    return merged;
-}
+// tokenize, lcsTable, computeWordDiff are imported from ./lib/text-utils.js
 
 /**
  * Show a diff popup comparing original vs refined text.
