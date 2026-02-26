@@ -9,6 +9,8 @@
 
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
+/** Extension version (semver). Bump when releasing client/UI changes. */
+const EXTENSION_VERSION = '2.0';
 
 /**
  * Base URL path for the ReDraft server plugin API. Works at root (/) and when ST
@@ -436,11 +438,14 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
                 : url;
             const isLocalhost = typeof window !== 'undefined' && window.location &&
                 /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(window.location.origin);
-            const authHint = (response.status === 401 || response.status === 403 || response.redirected)
-                ? ' The server may have returned a login page — refresh the page and try again; if you\'re on a multi-user instance, your session might not have been sent.'
-                : '';
+            let hint = '';
+            if (response.status === 502) {
+                hint = ' 502 Bad Gateway usually means your reverse proxy (nginx, Caddy, etc.) timed out waiting for the refinement — refinement can take 15–30 seconds. Ask your server admin to increase the proxy read/timeout for /api/ (e.g. 60s or more).';
+            } else if (response.status === 401 || response.status === 403 || response.redirected) {
+                hint = ' The server may have returned a login page — refresh the page and try again; if you\'re on a multi-user instance, your session might not have been sent.';
+            }
             throw new Error(
-                `Server returned a web page instead of JSON.` + authHint + ' ' +
+                `Server returned a web page instead of JSON.` + hint + ' ' +
                 (isLocalhost
                     ? 'On localhost this usually means the ReDraft server plugin is not installed or not enabled. '
                     : 'The ReDraft plugin may not be installed or the URL may be wrong. ') +
@@ -459,6 +464,11 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
 
 // ─── Plugin Status ──────────────────────────────────────────────────
 
+function updateVersionDisplay(status) {
+    const el = document.getElementById('redraft_server_plugin_version');
+    if (el) el.textContent = (status && status.version) ? status.version : '—';
+}
+
 async function checkPluginStatus() {
     try {
         const status = await pluginRequest('/status');
@@ -468,6 +478,7 @@ async function checkPluginStatus() {
         updatePluginBanner();
         updateConnectionModeUI();
         populatePluginFields(status);
+        updateVersionDisplay(status);
         return status;
     } catch {
         pluginAvailable = false;
@@ -475,6 +486,7 @@ async function checkPluginStatus() {
         updateConnectionInfo(null);
         updatePluginBanner();
         updateConnectionModeUI();
+        updateVersionDisplay(null);
         return null;
     }
 }
@@ -1974,6 +1986,11 @@ function registerSlashCommand() {
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
+            <div class="redraft-version-line" style="margin-bottom: 8px; font-size: calc(var(--mainFontSize) * 0.85); opacity: 0.85;">
+                <span title="Extension (client) version">Current ver. <strong id="redraft_ext_version">${EXTENSION_VERSION}</strong></span>
+                <span style="margin: 0 6px;">·</span>
+                <span title="Server plugin version (from ST server)">Server plugin ver. <strong id="redraft_server_plugin_version">—</strong></span>
+            </div>
 
             <!-- Top-level toggles -->
             <label class="checkbox_label">

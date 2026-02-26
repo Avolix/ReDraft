@@ -12,6 +12,8 @@ const fs = require('fs');
 
 const CONFIG_DIR = __dirname;
 const MODULE_NAME = 'redraft';
+/** Server plugin version (semver). Bump when releasing server-plugin changes; client shows this in settings. */
+const SERVER_PLUGIN_VERSION = '1.1';
 const REQUEST_TIMEOUT_MS = 30000;
 const MAX_BODY_SIZE_BYTES = 512 * 1024; // 512 KB
 
@@ -21,17 +23,22 @@ const configCache = new Map();
 /**
  * Get the current user id from the request when running in multi-user ST.
  * SillyTavern may set req.session.userId, req.user.id, or similar when enableUserAccounts is true.
+ * Never throws — returns null on any error so plugin always stays responsive.
  * @param {import('express').Request} req
  * @returns {string|null} Sanitized user id for config filename, or null for shared config.
  */
 function getUserId(req) {
-    if (!req) return null;
-    const raw = (req.session && (req.session.userId ?? req.session.user_id))
-        || (req.user && (req.user.id ?? req.user.userId))
-        || (req.headers && (req.headers['x-user-id'] || req.headers['x-user_id']));
-    if (raw == null || typeof raw !== 'string') return null;
-    const sanitized = String(raw).toLowerCase().replace(/[^a-z0-9_-]/g, '');
-    return sanitized.length > 0 ? sanitized : null;
+    try {
+        if (!req) return null;
+        const raw = (req.session && (req.session.userId ?? req.session.user_id))
+            || (req.user && (req.user.id ?? req.user.userId))
+            || (req.headers && (req.headers['x-user-id'] || req.headers['x-user_id']));
+        if (raw == null || typeof raw !== 'string') return null;
+        const sanitized = String(raw).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+        return sanitized.length > 0 ? sanitized : null;
+    } catch (_) {
+        return null;
+    }
 }
 
 /**
@@ -46,6 +53,9 @@ function getConfigPath(userId) {
 
 /**
  * Read and cache config from disk for the given user.
+ * If the user has no per-user config file, falls back to shared config.json so that
+ * when ST starts sending user ids (after another user used the plugin), the original
+ * shared config still works.
  * @param {string|null} userId
  * @returns {object|null} The config object or null if not configured.
  */
@@ -58,6 +68,10 @@ function readConfigForUser(userId) {
     try {
         if (!fs.existsSync(configPath)) {
             configCache.set(cacheKey, null);
+            if (userId) {
+                const shared = readConfigForUser(null);
+                if (shared) return shared;
+            }
             return null;
         }
         const raw = fs.readFileSync(configPath, 'utf-8');
@@ -67,6 +81,10 @@ function readConfigForUser(userId) {
     } catch (err) {
         console.error(`[${MODULE_NAME}] Failed to read config for ${cacheKey}:`, err.message);
         configCache.set(cacheKey, null);
+        if (userId) {
+            const shared = readConfigForUser(null);
+            if (shared) return shared;
+        }
         return null;
     }
 }
@@ -278,12 +296,15 @@ async function init(router) {
 
     /**
      * GET /status — Return plugin status (no secrets exposed). Per-user in multi-user mode.
+     * Always includes version so the client can show "Server plugin 1.1" in settings.
      */
     router.get('/status', (req, res) => {
         const userId = getUserId(req);
         const config = readConfigForUser(userId);
+        const base = { version: SERVER_PLUGIN_VERSION };
         if (!config || !config.apiKey || !config.apiUrl) {
             return res.json({
+                ...base,
                 configured: false,
                 apiUrl: null,
                 model: null,
@@ -292,6 +313,7 @@ async function init(router) {
         }
 
         return res.json({
+            ...base,
             configured: true,
             apiUrl: config.apiUrl,
             model: config.model || null,
@@ -352,15 +374,24 @@ async function init(router) {
      * POST /refine — Proxy refinement request to configured LLM. Per-user config in multi-user mode.
      * Accepts: { messages: [{role, content}] }
      * Returns: { text: string }
+     * Outer try/catch ensures we always respond with JSON (never HTML or no response).
      */
     router.post('/refine', async (req, res) => {
+        let config = null;
+        const sendJson = (status, body) => {
+            if (!res.headersSent) {
+                try { res.status(status).json(body); } catch (e) {
+                    console.error(`[${MODULE_NAME}] Failed to send response:`, e.message);
+                }
+            }
+        };
         try {
-            const bodySize = JSON.stringify(req.body).length;
+            const bodySize = JSON.stringify(req.body || {}).length;
             if (bodySize > MAX_BODY_SIZE_BYTES) {
                 return res.status(413).json({ error: 'Request body too large' });
             }
 
-            const { messages } = req.body;
+            const { messages } = req.body || {};
             if (!Array.isArray(messages) || messages.length === 0) {
                 return res.status(400).json({ error: 'messages must be a non-empty array' });
             }
@@ -375,7 +406,7 @@ async function init(router) {
             }
 
             const userId = getUserId(req);
-            const config = readConfigForUser(userId);
+            config = readConfigForUser(userId);
             if (!config || !config.apiKey || !config.apiUrl) {
                 return res.status(503).json({ error: 'ReDraft is not configured. Please set up API credentials.' });
             }
@@ -434,10 +465,11 @@ async function init(router) {
         } catch (err) {
             if (err.name === 'AbortError') {
                 console.error(`[${MODULE_NAME}] LLM request timed out after ${REQUEST_TIMEOUT_MS}ms`);
-                return res.status(504).json({ error: 'LLM request timed out' });
+                sendJson(504, { error: 'LLM request timed out' });
+                return;
             }
             console.error(`[${MODULE_NAME}] Refine error:`, sanitizeError(err.message, config));
-            return res.status(500).json({ error: 'Internal error during refinement' });
+            sendJson(500, { error: 'Internal error during refinement' });
         }
     });
 

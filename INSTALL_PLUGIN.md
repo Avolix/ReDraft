@@ -163,6 +163,8 @@ location /api/ {
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 60s;   # refinement can take 15–30s; avoid 502 from proxy timeout
+    proxy_send_timeout 60s;
 }
 ```
 
@@ -176,6 +178,8 @@ location /api/ {
 
 Replace `sillytavern` with your SillyTavern service/container name and `3000` with the port ST listens on inside the container. If you use a block like `handle /api/* { ... }` that sends only some paths elsewhere, either remove it for `/api/` or add a `handle /api/plugins/* { reverse_proxy sillytavern:3000 }` so plugin routes reach ST. Reload Caddy: `caddy reload --config /etc/caddy/Caddyfile` or restart the Caddy container.
 
+**Timeouts:** The `/api/plugins/redraft/refine` request can take 15–30 seconds (LLM call). If the proxy times out earlier (e.g. default 2–10s), you get **502 Bad Gateway** and "Server returned a web page instead of JSON". Increase the proxy read/send timeout for `/api/` to at least **60 seconds** (nginx: `proxy_read_timeout 60s`; Caddy: `transport http { read_timeout 60s write_timeout 60s }` or similar).
+
 After changing the proxy config, reload the proxy. Then open `http://your-proxy-url/api/plugins/redraft/status` in a browser — you should see JSON like `{"configured":false,...}`, not "Not found".
 
 ---
@@ -184,13 +188,13 @@ After changing the proxy config, reload the proxy. Then open `http://your-proxy-
 
 | Issue | What to do |
 |-------|------------|
-| **"Server returned a web page instead of JSON" (including on localhost)** | Either the plugin isn't loaded (run installer, restart ST) or you're behind a reverse proxy that doesn't forward `/api/`. If the URL in the error opens to "Not found" / "The requested URL was not found on this server", the proxy is not forwarding `/api/` to SillyTavern — see [Reverse proxy](#reverse-proxy-nginx-caddy-etc). |
+| **"Server returned a web page instead of JSON" (including on localhost)** | If you see **502**: your reverse proxy likely timed out — refinement takes 15–30s. Increase proxy read/timeout for `/api/` to 60s or more; see [Reverse proxy](#reverse-proxy-nginx-caddy-etc). Otherwise: plugin not loaded (run installer, restart ST) or proxy not forwarding `/api/`. If the URL in the error opens to "Not found", the proxy is not forwarding `/api/` to SillyTavern. |
 | **"Cannot find module '.../install.js'"** | The extension isn't at that path. Use Option B: `cd` to the folder that contains `server-plugin/` and run `node server-plugin/install.js` (set `ST_ROOT` if needed). See [Docker / custom install paths](#docker--custom-install-paths) above. |
 | **"Could not locate SillyTavern root"** | Run the script from the ST root, or from inside the ReDraft extension folder so it can find `server.js` above. Or set `ST_ROOT` to your SillyTavern root. |
 | **“Plugin unavailable” / Test fails** | Restart SillyTavern after installing. Ensure server plugins are enabled (installer sets `enableServerPlugins: true` in `config.yaml`). |
 | **“Not configured” after save** | Click **Save Connection** again. Check that API URL has no trailing slash and that the key and model are correct. |
 | **503 when refining** | Plugin is reachable but credentials aren’t saved. Enter URL, Key, and Model in ReDraft settings and click **Save Connection**, then **Test Connection**. |
-| **502 / timeout when refining** | API or model problem (wrong URL, key, or model name). Check the SillyTavern server console for the plugin’s error message. |
+| **502 Bad Gateway when refining** | Most often: reverse proxy read timeout (refinement takes 15–30s). Increase proxy timeout for `/api/` to 60s; see [Reverse proxy](#reverse-proxy-nginx-caddy-etc). Otherwise: API or model problem (wrong URL, key, or model name). Check the SillyTavern server console for the plugin’s error message. |
 
 ---
 
