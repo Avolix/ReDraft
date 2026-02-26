@@ -85,6 +85,44 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
+// ─── Server-plugin CJS compatibility ────────────────────────────────
+
+describe('server-plugin CJS compatibility', () => {
+    const serverPluginDir = path.resolve(__dirname, '..', 'server-plugin');
+
+    it('all .js files use CommonJS syntax (no ESM import/export)', () => {
+        const jsFiles = fs.readdirSync(serverPluginDir, { recursive: true })
+            .filter(f => typeof f === 'string' && f.endsWith('.js'));
+
+        expect(jsFiles.length).toBeGreaterThan(0);
+
+        for (const file of jsFiles) {
+            const content = fs.readFileSync(path.join(serverPluginDir, file), 'utf-8');
+            const hasImportFrom = /^\s*import\s+.+\s+from\s+/m.test(content);
+            const hasExportDefault = /^\s*export\s+default\s+/m.test(content);
+            const hasExportNamed = /^\s*export\s+\{/m.test(content);
+            const hasImportMeta = /import\.meta/.test(content);
+
+            expect(hasImportFrom, `${file} has ESM "import … from" — must use require()`).toBe(false);
+            expect(hasExportDefault, `${file} has ESM "export default" — must use module.exports`).toBe(false);
+            expect(hasExportNamed, `${file} has ESM "export {" — must use module.exports`).toBe(false);
+            expect(hasImportMeta, `${file} has "import.meta" — not available in CJS`).toBe(false);
+        }
+    });
+
+    it('package.json declares "type": "commonjs"', () => {
+        const pkg = JSON.parse(fs.readFileSync(path.join(serverPluginDir, 'package.json'), 'utf-8'));
+        expect(pkg.type).toBe('commonjs');
+    });
+
+    it('SERVER_PLUGIN_VERSION is a valid semver string', () => {
+        const content = fs.readFileSync(pluginPath, 'utf-8');
+        const match = content.match(/SERVER_PLUGIN_VERSION\s*=\s*['"]([^'"]+)['"]/);
+        expect(match).not.toBeNull();
+        expect(match[1]).toMatch(/^\d+\.\d+\.\d+$/);
+    });
+});
+
 // ─── Auto-update (tryUpdateFromExtension) ───────────────────────────
 
 describe('tryUpdateFromExtension (auto-update)', () => {
