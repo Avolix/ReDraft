@@ -13,7 +13,7 @@ const fs = require('fs');
 const CONFIG_DIR = __dirname;
 const MODULE_NAME = 'redraft';
 /** Server plugin version (semver). Bump when releasing server-plugin changes; client shows this in settings. */
-const SERVER_PLUGIN_VERSION = '1.1';
+const SERVER_PLUGIN_VERSION = '1.1.1';
 const REQUEST_TIMEOUT_MS = 30000;
 const MAX_BODY_SIZE_BYTES = 512 * 1024; // 512 KB
 
@@ -386,12 +386,13 @@ async function init(router) {
             }
         };
         try {
-            const bodySize = JSON.stringify(req.body || {}).length;
+            const body = req.body != null ? req.body : {};
+            const bodySize = JSON.stringify(body).length;
             if (bodySize > MAX_BODY_SIZE_BYTES) {
                 return res.status(413).json({ error: 'Request body too large' });
             }
 
-            const { messages } = req.body || {};
+            const { messages } = body;
             if (!Array.isArray(messages) || messages.length === 0) {
                 return res.status(400).json({ error: 'messages must be a non-empty array' });
             }
@@ -469,6 +470,9 @@ async function init(router) {
                 return;
             }
             console.error(`[${MODULE_NAME}] Refine error:`, sanitizeError(err.message, config));
+            sendJson(500, { error: 'Internal error during refinement' });
+        } catch (outerErr) {
+            console.error(`[${MODULE_NAME}] Refine uncaught:`, outerErr && outerErr.message);
             sendJson(500, { error: 'Internal error during refinement' });
         }
     });

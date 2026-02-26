@@ -440,17 +440,15 @@ async function pluginRequest(endpoint, method = 'GET', body = null) {
                 /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(window.location.origin);
             let hint = '';
             if (response.status === 502) {
-                hint = ' 502 Bad Gateway usually means your reverse proxy (nginx, Caddy, etc.) timed out waiting for the refinement — refinement can take 15–30 seconds. Ask your server admin to increase the proxy read/timeout for /api/ (e.g. 60s or more).';
+                hint = ' 502 Bad Gateway can mean: (1) Proxy timed out — refinement takes 15–30s; increase Caddy read/timeout for the ST backend to at least 60s. (2) ST or the plugin closed the connection or threw — if you didn\'t change Caddy, check the SillyTavern terminal/console when you trigger refine; any error or stack trace there is the real cause. Opening the request URL in a browser does a GET (refine expects POST), so "Not found" there is normal.';
             } else if (response.status === 401 || response.status === 403 || response.redirected) {
                 hint = ' The server may have returned a login page — refresh the page and try again; if you\'re on a multi-user instance, your session might not have been sent.';
             }
             throw new Error(
-                `Server returned a web page instead of JSON.` + hint + ' ' +
+                `Server returned a web page instead of JSON.` + hint +
                 (isLocalhost
-                    ? 'On localhost this usually means the ReDraft server plugin is not installed or not enabled. '
-                    : 'The ReDraft plugin may not be installed or the URL may be wrong. ') +
-                `Request was: ${fullUrl} — open that link in a new tab to see what the server returns. ` +
-                `Run the installer (see INSTALL_PLUGIN.md), set enableServerPlugins: true in config.yaml, then restart SillyTavern.`
+                    ? ' On localhost, if the plugin is not installed, run the installer and restart ST.'
+                    : '')
             );
         }
         throw new Error(`Invalid response from server: ${trimmed.slice(0, 80)}${trimmed.length > 80 ? '…' : ''}`);
