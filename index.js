@@ -925,17 +925,33 @@ async function undoRedraft(messageIndex) {
 }
 
 /**
- * Re-render a single message in the UI.
+ * Re-render a single message in the UI using ST's own updateMessageBlock.
+ * Falls back to manual innerHTML update if the API is unavailable.
  */
 function rerenderMessage(messageIndex) {
     const context = SillyTavern.getContext();
+    if (!context.chat[messageIndex]) return;
+
+    // Prefer ST's built-in updateMessageBlock — handles user vs AI, formatting, etc.
+    if (typeof context.updateMessageBlock === 'function') {
+        const mesElement = document.querySelector(`.mes[mesid="${messageIndex}"]`);
+        if (mesElement) {
+            context.updateMessageBlock(messageIndex, mesElement);
+            return;
+        }
+    }
+
+    // Fallback: manual re-render with correct isUser flag
     const mesBlock = document.querySelector(`.mes[mesid="${messageIndex}"] .mes_text`);
-    if (mesBlock && context.chat[messageIndex]) {
+    if (mesBlock) {
+        const msg = context.chat[messageIndex];
         const { messageFormatting } = context;
         if (typeof messageFormatting === 'function') {
-            mesBlock.innerHTML = messageFormatting(context.chat[messageIndex].mes, context.chat[messageIndex].name, false, false, messageIndex);
+            const isUser = !!msg.is_user;
+            const isSystem = !!msg.is_system;
+            mesBlock.innerHTML = messageFormatting(msg.mes, msg.name, isSystem, isUser, messageIndex);
         } else {
-            mesBlock.textContent = context.chat[messageIndex].mes;
+            mesBlock.textContent = msg.mes;
         }
     }
 }
@@ -2299,17 +2315,35 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     // Only intercept normal user-initiated generations
     if (type === 'quiet' || type === 'impersonate') return;
 
-    // Find the last user message in the chat array
-    let lastUserIdx = -1;
+    // Find the last user message — search in context.chat (full chat) for correct DOM index.
+    // The interceptor's `chat` param may be a trimmed subset for prompt building, so we use
+    // it only to identify the message object, then resolve its real index in context.chat.
+    const context = SillyTavern.getContext();
+    const fullChat = context.chat;
+
+    let message = null;
+    let realIdx = -1;
+
+    // Walk backward through the interceptor's chat to find the last user message object
     for (let i = chat.length - 1; i >= 0; i--) {
         if (chat[i].is_user && chat[i].mes) {
-            lastUserIdx = i;
+            message = chat[i];
             break;
         }
     }
-    if (lastUserIdx < 0) return;
+    if (!message) return;
 
-    const message = chat[lastUserIdx];
+    // Resolve the real index in context.chat (same object reference)
+    for (let i = fullChat.length - 1; i >= 0; i--) {
+        if (fullChat[i] === message) {
+            realIdx = i;
+            break;
+        }
+    }
+    if (realIdx < 0) {
+        console.warn(`${LOG_PREFIX} [pre-send] Could not resolve real index for user message, skipping`);
+        return;
+    }
 
     // Skip very short messages (e.g. "ok", "sure", "*nods*")
     if (message.mes.trim().length < 20) {
@@ -2318,10 +2352,9 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     }
 
     // Skip if this message was already enhanced (avoid double-enhance on regenerate/swipe)
-    const context = SillyTavern.getContext();
     const originals = context.chatMetadata?.['redraft_originals'];
-    if (originals && originals[lastUserIdx] !== undefined) {
-        console.debug(`${LOG_PREFIX} [pre-send] Message ${lastUserIdx} already has an original stored, skipping`);
+    if (originals && originals[realIdx] !== undefined) {
+        console.debug(`${LOG_PREFIX} [pre-send] Message ${realIdx} already has an original stored, skipping`);
         return;
     }
 
@@ -2331,7 +2364,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
         return;
     }
 
-    console.log(`${LOG_PREFIX} [pre-send] Enhancing user message ${lastUserIdx} before generation`);
+    console.log(`${LOG_PREFIX} [pre-send] Enhancing user message (chat index ${realIdx}) before generation`);
     isRefining = true;
     toastr.info('Enhancing your message before sending\u2026', 'ReDraft', { timeOut: 0, extendedTimeOut: 0, tapToDismiss: false, className: 'redraft-presend-toast' });
 
@@ -2360,8 +2393,8 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
             contextParts.push(`Character you are interacting with: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
         }
 
-        // Previous AI response (for scene context)
-        const prevAiMsg = [...chat.slice(0, lastUserIdx)].reverse().find(m => !m.is_user && m.mes);
+        // Previous AI response (for scene context) — use full chat for correct lookback
+        const prevAiMsg = [...fullChat.slice(0, realIdx)].reverse().find(m => !m.is_user && m.mes);
         if (prevAiMsg) {
             const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
             contextParts.push(`Last response from ${context.name2 || 'the character'} (for scene context, last ~${tailChars} chars):\n${prevAiMsg.mes.slice(-tailChars)}`);
@@ -2409,21 +2442,25 @@ Rules:\n${rulesText}\n\nOriginal message:\n${stripped}`;
         // Store original for undo and update the chat message in place
         const { chatMetadata, saveChat, saveMetadata: saveMeta } = context;
         if (!chatMetadata['redraft_originals']) chatMetadata['redraft_originals'] = {};
-        chatMetadata['redraft_originals'][lastUserIdx] = message.mes;
+        chatMetadata['redraft_originals'][realIdx] = message.mes;
 
         if (!chatMetadata['redraft_diffs']) chatMetadata['redraft_diffs'] = {};
-        chatMetadata['redraft_diffs'][lastUserIdx] = { original: message.mes, changelog: changelog || null };
+        chatMetadata['redraft_diffs'][realIdx] = { original: message.mes, changelog: changelog || null };
 
         message.mes = refinedText;
         await saveChat();
         await saveMeta();
 
-        // Re-render the user message so the UI shows the enhanced version
-        rerenderMessage(lastUserIdx);
-        showUndoButton(lastUserIdx);
-        showDiffButton(lastUserIdx, chatMetadata['redraft_originals'][lastUserIdx], refinedText, changelog);
+        // Re-render the user message so the UI shows the enhanced version.
+        // Use immediate + deferred re-render to handle ST's own rendering pipeline.
+        rerenderMessage(realIdx);
+        setTimeout(() => {
+            rerenderMessage(realIdx);
+            showUndoButton(realIdx);
+            showDiffButton(realIdx, chatMetadata['redraft_originals'][realIdx], refinedText, changelog);
+        }, 200);
 
-        console.log(`${LOG_PREFIX} [pre-send] User message ${lastUserIdx} enhanced successfully`);
+        console.log(`${LOG_PREFIX} [pre-send] User message ${realIdx} enhanced successfully`);
         toastr.clear();
         toastr.success('Message enhanced (pre-send)', 'ReDraft');
         playNotificationSound();
