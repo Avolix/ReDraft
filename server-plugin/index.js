@@ -14,7 +14,7 @@ const CONFIG_DIR = __dirname;
 const MODULE_NAME = 'redraft';
 /** Server plugin version (semver). Bump when releasing server-plugin changes; client shows this in settings. */
 const SERVER_PLUGIN_VERSION = '1.1.1';
-const REQUEST_TIMEOUT_MS = 30000;
+const REQUEST_TIMEOUT_MS = 60000;
 const MAX_BODY_SIZE_BYTES = 512 * 1024; // 512 KB
 
 /** Per-user config cache: key is userId string or '__shared' for single-user. */
@@ -67,11 +67,11 @@ function readConfigForUser(userId) {
     const configPath = getConfigPath(userId);
     try {
         if (!fs.existsSync(configPath)) {
-            configCache.set(cacheKey, null);
             if (userId) {
                 const shared = readConfigForUser(null);
                 if (shared) return shared;
             }
+            configCache.set(cacheKey, null);
             return null;
         }
         const raw = fs.readFileSync(configPath, 'utf-8');
@@ -80,11 +80,11 @@ function readConfigForUser(userId) {
         return config;
     } catch (err) {
         console.error(`[${MODULE_NAME}] Failed to read config for ${cacheKey}:`, err.message);
-        configCache.set(cacheKey, null);
         if (userId) {
             const shared = readConfigForUser(null);
             if (shared) return shared;
         }
+        configCache.set(cacheKey, null);
         return null;
     }
 }
@@ -470,9 +470,6 @@ async function init(router) {
                 return;
             }
             console.error(`[${MODULE_NAME}] Refine error:`, sanitizeError(err.message, config));
-            sendJson(500, { error: 'Internal error during refinement' });
-        } catch (outerErr) {
-            console.error(`[${MODULE_NAME}] Refine uncaught:`, outerErr && outerErr.message);
             sendJson(500, { error: 'Internal error during refinement' });
         }
     });
