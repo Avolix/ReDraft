@@ -171,25 +171,72 @@ function sanitizeError(message, config) {
 }
 
 /**
+ * Scan ST's data and legacy directories for the ReDraft extension's server-plugin folder.
+ * Handles all user directories (multi-user) and case variations of the folder name.
+ * Returns the path with the newest index.js, or null if not found.
+ * @param {string} stRoot
+ * @returns {string|null}
+ */
+function findExtensionServerPlugin(stRoot) {
+    const candidates = [];
+
+    // Scan data/*/extensions/third-party/ for all users
+    const dataDir = path.join(stRoot, 'data');
+    try {
+        if (fs.existsSync(dataDir)) {
+            const userDirs = fs.readdirSync(dataDir, { withFileTypes: true })
+                .filter(d => d.isDirectory());
+            for (const user of userDirs) {
+                const thirdParty = path.join(dataDir, user.name, 'extensions', 'third-party');
+                try {
+                    if (!fs.existsSync(thirdParty)) continue;
+                    const extDirs = fs.readdirSync(thirdParty, { withFileTypes: true })
+                        .filter(d => d.isDirectory() && d.name.toLowerCase() === 'redraft');
+                    for (const ext of extDirs) {
+                        candidates.push(path.join(thirdParty, ext.name, 'server-plugin'));
+                    }
+                } catch { /* skip unreadable user dir */ }
+            }
+        }
+    } catch { /* skip if data/ unreadable */ }
+
+    // Legacy path: public/scripts/extensions/third-party/
+    const legacyBase = path.join(stRoot, 'public', 'scripts', 'extensions', 'third-party');
+    try {
+        if (fs.existsSync(legacyBase)) {
+            const extDirs = fs.readdirSync(legacyBase, { withFileTypes: true })
+                .filter(d => d.isDirectory() && d.name.toLowerCase() === 'redraft');
+            for (const ext of extDirs) {
+                candidates.push(path.join(legacyBase, ext.name, 'server-plugin'));
+            }
+        }
+    } catch { /* skip if legacy path unreadable */ }
+
+    // Return the candidate with the newest index.js
+    let newestDir = null;
+    let newestMtime = 0;
+    for (const dir of candidates) {
+        try {
+            const mtime = fs.statSync(path.join(dir, 'index.js')).mtimeMs;
+            if (mtime > newestMtime) {
+                newestMtime = mtime;
+                newestDir = dir;
+            }
+        } catch { /* no index.js in this candidate */ }
+    }
+    return newestDir;
+}
+
+/**
  * If the ReDraft extension was updated within ST, its server-plugin folder may be newer than
  * the installed plugin. Copy those files here so the next restart runs the updated plugin.
- * Does not overwrite config.json (user credentials).
+ * Does not overwrite config*.json (user credentials).
  */
 function tryUpdateFromExtension() {
     const pluginDir = __dirname;
     const stRoot = path.join(pluginDir, '..', '..');
-    const candidatePaths = [
-        path.join(stRoot, 'data', 'default-user', 'extensions', 'third-party', 'redraft', 'server-plugin'),
-        path.join(stRoot, 'public', 'scripts', 'extensions', 'third-party', 'redraft', 'server-plugin'),
-    ];
-    let extensionDir = null;
-    for (const p of candidatePaths) {
-        const idx = path.join(p, 'index.js');
-        if (fs.existsSync(idx)) {
-            extensionDir = p;
-            break;
-        }
-    }
+
+    const extensionDir = findExtensionServerPlugin(stRoot);
     if (!extensionDir) return;
 
     const extIndex = path.join(extensionDir, 'index.js');
@@ -224,7 +271,7 @@ function tryUpdateFromExtension() {
             console.warn(`[${MODULE_NAME}] Could not write package.json:`, e.message);
         }
     }
-    console.log(`[${MODULE_NAME}] Server plugin updated from extension (updated within ST). Restart SillyTavern to use the new version.`);
+    console.log(`[${MODULE_NAME}] Server plugin updated from extension at ${extensionDir}. Restart SillyTavern to use the new version.`);
 }
 
 /**

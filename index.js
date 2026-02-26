@@ -928,12 +928,14 @@ function setPopoutTriggerLoading(loading, lastDurationMs) {
             _triggerDurationTimeout = null;
         }
         trigger.classList.add('redraft-refining');
+        trigger.classList.remove('redraft-show-duration');
         trigger.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
     } else {
         trigger.classList.remove('redraft-refining');
         if (typeof lastDurationMs === 'number' && lastDurationMs >= 0) {
             const sec = lastDurationMs / 1000;
             const durationText = sec >= 10 ? `${Math.round(sec)}s` : sec % 1 === 0 ? `${sec}s` : `${sec.toFixed(1)}s`;
+            trigger.classList.add('redraft-show-duration');
             trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-trigger-duration">' + durationText + '</span><span class="redraft-auto-dot"></span>';
             trigger.title = `ReDraft — last refine: ${durationText}`;
             updatePopoutAutoState();
@@ -942,12 +944,14 @@ function setPopoutTriggerLoading(loading, lastDurationMs) {
                 _triggerDurationTimeout = null;
                 const t = document.getElementById('redraft_popout_trigger');
                 if (t && !t.classList.contains('redraft-refining')) {
+                    t.classList.remove('redraft-show-duration');
                     t.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-auto-dot"></span>';
                     t.title = 'ReDraft';
                     updatePopoutAutoState();
                 }
-            }, 5000);
+            }, 15000);
         } else {
+            trigger.classList.remove('redraft-show-duration');
             trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-auto-dot"></span>';
             trigger.title = 'ReDraft';
             updatePopoutAutoState();
@@ -1633,6 +1637,17 @@ function bindSettingsUI() {
         fetchModelsBtn.addEventListener('click', fetchModels);
     }
 
+    // Model select dropdown (mobile-friendly alternative to datalist)
+    const modelSelect = document.getElementById('redraft_model_select');
+    if (modelSelect) {
+        modelSelect.addEventListener('change', (e) => {
+            const modelInput = document.getElementById('redraft_model');
+            if (modelInput && e.target.value) {
+                modelInput.value = e.target.value;
+            }
+        });
+    }
+
     // Import custom rules button
     const importBtn = document.getElementById('redraft_import_rules');
     const importFile = document.getElementById('redraft_import_rules_file');
@@ -1860,7 +1875,28 @@ async function fetchModels() {
             }
         }
 
-        toastr.success(`${models.length} model(s) loaded — click the Model field to browse`, 'ReDraft');
+        const modelSelect = document.getElementById('redraft_model_select');
+        if (modelSelect) {
+            const currentModel = document.getElementById('redraft_model')?.value?.trim() || '';
+            modelSelect.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.disabled = true;
+            placeholder.selected = !currentModel;
+            placeholder.textContent = `Select a model (${models.length} available)`;
+            modelSelect.appendChild(placeholder);
+
+            for (const m of models) {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.name && m.name !== m.id ? `${m.id} — ${m.name}` : m.id;
+                if (m.id === currentModel) opt.selected = true;
+                modelSelect.appendChild(opt);
+            }
+            modelSelect.style.display = '';
+        }
+
+        toastr.success(`${models.length} model(s) loaded — select from the dropdown or type a name`, 'ReDraft');
     } catch (err) {
         toastr.error(err?.message || 'Failed to fetch models', 'ReDraft');
     }
@@ -2079,8 +2115,13 @@ function registerSlashCommand() {
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_model">Model</label>
-                            <input id="redraft_model" type="text" class="text_pole" placeholder="gpt-4o-mini" title="e.g. gpt-4o-mini, claude-3-haiku" list="redraft_model_list" autocomplete="off" />
-                            <datalist id="redraft_model_list"></datalist>
+                            <div class="redraft-model-picker">
+                                <input id="redraft_model" type="text" class="text_pole" placeholder="gpt-4o-mini" title="e.g. gpt-4o-mini, claude-3-haiku" list="redraft_model_list" autocomplete="off" />
+                                <datalist id="redraft_model_list"></datalist>
+                                <select id="redraft_model_select" class="redraft-model-select" style="display:none;">
+                                    <option value="" disabled selected>Click "Models" to load list</option>
+                                </select>
+                            </div>
                         </div>
                         <div class="redraft-form-group">
                             <label for="redraft_max_tokens">Max Tokens</label>
