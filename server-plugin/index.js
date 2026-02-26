@@ -16,6 +16,8 @@ const MODULE_NAME = 'redraft';
 const SERVER_PLUGIN_VERSION = '1.1.1';
 const REQUEST_TIMEOUT_MS = 60000;
 const MAX_BODY_SIZE_BYTES = 512 * 1024; // 512 KB
+const MAX_LLM_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 2000;
 
 /** Per-user config cache: key is userId string or '__shared' for single-user. */
 const configCache = new Map();
@@ -470,24 +472,35 @@ async function init(router) {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${config.apiKey}`,
-                },
-                body: JSON.stringify(payload),
-                signal: controller.signal,
-            });
+            let response;
+            let rawBody;
+
+            for (let attempt = 1; attempt <= MAX_LLM_ATTEMPTS; attempt++) {
+                response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${config.apiKey}`,
+                    },
+                    body: JSON.stringify(payload),
+                    signal: controller.signal,
+                });
+
+                rawBody = await response.text();
+
+                if (response.ok || response.status !== 503 || attempt === MAX_LLM_ATTEMPTS) break;
+
+                const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+                console.warn(`[${MODULE_NAME}] LLM returned 503 for model "${config.model}" (attempt ${attempt}/${MAX_LLM_ATTEMPTS}), retrying in ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
 
             clearTimeout(timeout);
 
-            const rawBody = await response.text();
-
             if (!response.ok) {
                 const sanitized = sanitizeError(rawBody, config);
-                console.error(`[${MODULE_NAME}] LLM API error (${response.status}):`, sanitized);
-                return res.status(502).json({ error: `LLM API returned ${response.status}: ${sanitized.slice(0, 200)}` });
+                console.error(`[${MODULE_NAME}] LLM API error (${response.status}) for model "${config.model}" at ${config.apiUrl}:`, sanitized);
+                return res.status(502).json({ error: `LLM API returned ${response.status} for model "${config.model}": ${sanitized.slice(0, 200)}` });
             }
 
             let data;
