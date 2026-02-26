@@ -116,6 +116,58 @@
     margin-bottom: 2px;
 }
 
+/* Version line at top of settings drawer */
+.redraft-version-line {
+    margin-bottom: 8px;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    opacity: 0.85;
+}
+
+.redraft-version-sep {
+    margin: 0 6px;
+}
+
+/* Section separators within drawers */
+#redraft_settings hr {
+    margin: 8px 0;
+    opacity: 0.2;
+}
+
+/* Notification sound sub-options */
+.redraft-sound-options {
+    margin-left: 1.5em;
+    margin-top: 6px;
+}
+
+.redraft-sound-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.redraft-sound-row .text_pole {
+    flex: 1;
+    min-width: 160px;
+}
+
+.redraft-sound-row .redraft-sound-or {
+    white-space: nowrap;
+}
+
+/* System prompt textareas (AI refine + user enhance) */
+.redraft-system-prompt {
+    resize: vertical;
+    field-sizing: content;
+    max-height: 50vh;
+}
+
+/* Custom rules header toggle label */
+.redraft-custom-rules-toggle-label {
+    margin: 0;
+    gap: 4px;
+}
+
 .redraft-popout-status {
     font-size: calc(var(--mainFontSize) * 0.8);
     opacity: 0.5;
@@ -294,78 +346,6 @@
 
 .redraft-plugin-unavailable .menu_button {
     align-self: flex-start;
-}
-
-/* Install dialog */
-.redraft-install-dialog {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    z-index: 9999;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--black50a);
-}
-
-.redraft-install-dialog-content {
-    width: 90%;
-    max-width: 520px;
-    padding: 15px;
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 10px;
-    box-shadow: 0 0 20px var(--SmartThemeShadowColor);
-    background: var(--SmartThemeBlurTintColor);
-    backdrop-filter: blur(calc(var(--blurStrength, 10) * 1px));
-    color: var(--SmartThemeBodyColor);
-    font-family: var(--mainFontFamily);
-    font-size: var(--mainFontSize);
-}
-
-.redraft-install-dialog-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 10px;
-    font-weight: 600;
-}
-
-.redraft-install-dialog p {
-    margin: 0 0 8px 0;
-    opacity: 0.8;
-    font-size: calc(var(--mainFontSize) * 0.9);
-}
-
-.redraft-install-command-block {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px;
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 5px;
-    background: var(--black30a);
-    margin-bottom: 8px;
-}
-
-.redraft-install-command-block code {
-    flex: 1;
-    font-family: var(--monoFontFamily);
-    font-size: calc(var(--mainFontSize) * 0.8);
-    word-break: break-all;
-    user-select: all;
-}
-
-.redraft-install-command-block .menu_button {
-    flex-shrink: 0;
-    padding: 2px 6px;
-}
-
-.redraft-install-hint {
-    display: block;
-    opacity: 0.5;
-    font-size: calc(var(--mainFontSize) * 0.8);
 }
 
 /* Built-in rules */
@@ -547,17 +527,11 @@
     font-family: monospace;
 }
 
-/* GitHub-style inline diff highlighting — theme-aware */
+/* GitHub-style inline diff highlighting.
+   These colors at 15% opacity via color-mix() work on both light and dark ST themes. */
 :root {
     --redraft-del-color: #f85149;
     --redraft-ins-color: #3fb950;
-}
-
-@media (prefers-color-scheme: light) {
-    :root {
-        --redraft-del-color: #cf222e;
-        --redraft-ins-color: #1a7f37;
-    }
 }
 
 .redraft-diff-del {

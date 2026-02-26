@@ -982,6 +982,9 @@ function showDiffPopup(original, refined, changelog = null) {
     const overlay = document.createElement('div');
     overlay.id = 'redraft_diff_overlay';
     overlay.classList.add('redraft-diff-overlay');
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'ReDraft diff viewer');
     overlay.innerHTML = `
         <div class="redraft-diff-panel">
             <div class="redraft-diff-header">
@@ -1022,11 +1025,20 @@ function createPopoutTrigger() {
     trigger.id = 'redraft_popout_trigger';
     trigger.classList.add('redraft-popout-trigger');
     trigger.title = 'ReDraft';
+    trigger.setAttribute('role', 'button');
+    trigger.setAttribute('tabindex', '0');
+    trigger.setAttribute('aria-label', 'Open ReDraft panel');
     trigger.innerHTML = `
         <i class="fa-solid fa-pen-nib"></i>
         <span class="redraft-auto-dot"></span>
     `;
     trigger.addEventListener('click', togglePopout);
+    trigger.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            togglePopout();
+        }
+    });
     document.body.appendChild(trigger);
 
     updatePopoutAutoState();
@@ -1772,6 +1784,18 @@ function bindSettingsUI() {
 
     // Set initial connection mode UI
     updateConnectionModeUI();
+
+    // Polyfill field-sizing: content for browsers that don't support it (Firefox, Safari)
+    if (!CSS.supports('field-sizing', 'content')) {
+        const autoResize = (textarea) => {
+            textarea.style.height = 'auto';
+            textarea.style.height = textarea.scrollHeight + 'px';
+        };
+        document.querySelectorAll('#redraft_settings .redraft-system-prompt').forEach(ta => {
+            ta.addEventListener('input', () => autoResize(ta));
+            autoResize(ta);
+        });
+    }
 }
 
 /**
@@ -2268,9 +2292,9 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <div class="redraft-version-line" style="margin-bottom: 8px; font-size: calc(var(--mainFontSize) * 0.85); opacity: 0.85;">
+            <div class="redraft-version-line">
                 <span title="Extension (client) version">Current ver. <strong id="redraft_ext_version">${EXTENSION_VERSION}</strong></span>
-                <span style="margin: 0 6px;">·</span>
+                <span class="redraft-version-sep">·</span>
                 <span title="Server plugin version (from ST server)">Server plugin ver. <strong id="redraft_server_plugin_version">—</strong></span>
             </div>
 
@@ -2284,21 +2308,21 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                 <span>Auto-refine new AI messages</span>
             </label>
 
-            <hr style="margin: 8px 0; opacity: 0.2;" />
+            <hr />
 
             <label class="checkbox_label">
                 <input type="checkbox" id="redraft_show_diff" />
                 <span>Show diff after refinement</span>
             </label>
-            <div class="redraft-form-group" style="margin-top: 8px;">
+            <div class="redraft-form-group">
                 <label class="checkbox_label">
                     <input type="checkbox" id="redraft_notification_sound" />
                     <span>Play sound when refinement finishes</span>
                 </label>
-                <div id="redraft_notification_sound_options" style="margin-left: 1.5em; margin-top: 6px;">
-                    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px;">
-                        <input type="url" id="redraft_notification_sound_url" class="text_pole" placeholder="Custom sound URL (optional)" style="flex: 1; min-width: 160px;" />
-                        <span style="white-space: nowrap;">or</span>
+                <div id="redraft_notification_sound_options" class="redraft-sound-options">
+                    <div class="redraft-sound-row">
+                        <input type="url" id="redraft_notification_sound_url" class="text_pole" placeholder="Custom sound URL (optional)" />
+                        <span class="redraft-sound-or">or</span>
                         <input type="file" id="redraft_notification_sound_file" accept="audio/*" hidden />
                         <div id="redraft_notification_sound_upload_btn" class="menu_button menu_button_icon" title="Upload a sound file (WAV, MP3, etc.)">
                             <i class="fa-solid fa-file-audio"></i>
@@ -2309,7 +2333,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                             <span>Default</span>
                         </div>
                     </div>
-                    <small class="redraft-section-hint" style="display: block; margin-top: 4px;">Leave empty for a short default beep. Use a URL or upload your own (saved in browser).</small>
+                    <small class="redraft-section-hint">Leave empty for a short default beep. Use a URL or upload your own (saved in browser).</small>
                 </div>
             </div>
 
@@ -2330,7 +2354,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                     <p id="redraft_connection_mode_hint" class="redraft-connection-hint" style="display: none;">
                         Use a different API/model for refinement (e.g. a faster or cheaper model). One-time plugin install required — see install instructions below.
                     </p>
-                    <p id="redraft_multiuser_hint" class="redraft-section-hint" style="display: none; margin-top: 4px;">
+                    <p id="redraft_multiuser_hint" class="redraft-section-hint" style="display: none;">
                         In multi-user setups, each user can have their own Separate LLM credentials (per-user config). If your ST instance does not pass user context to plugins, a single shared config is used.
                     </p>
 
@@ -2450,7 +2474,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                     <hr />
 
                     <div class="redraft-custom-rules-header">
-                        <label class="checkbox_label" style="margin:0;gap:4px;">
+                        <label class="checkbox_label redraft-custom-rules-toggle-label">
                             <input type="checkbox" id="redraft_custom_rules_toggle" title="Enable/disable all custom rules" />
                             <small>Custom Rules (ordered by priority)</small>
                         </label>
@@ -2481,21 +2505,21 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
-                    <small class="redraft-section-hint" style="margin-bottom: 6px;">Enhance your own messages — fix grammar, match your persona voice, improve prose.</small>
+                    <small class="redraft-section-hint">Enhance your own messages — fix grammar, match your persona voice, improve prose.</small>
 
                     <label class="checkbox_label" title="Show an Enhance button on your messages. Uses your persona page for character voice matching.">
                         <input type="checkbox" id="redraft_user_enhance" />
                         <span>Enable user message enhancement</span>
                     </label>
 
-                    <div class="redraft-form-group" style="margin-top: 6px;">
+                    <div class="redraft-form-group">
                         <label for="redraft_user_enhance_mode">Enhancement Mode</label>
                         <select id="redraft_user_enhance_mode">
                             <option value="post">Post-send (enhance after message is sent)</option>
                             <option value="pre">Pre-send (enhance before AI sees your message)</option>
                         </select>
                     </div>
-                    <small id="redraft_enhance_mode_hint" class="redraft-section-hint" style="margin-top: 2px; display: none;"></small>
+                    <small id="redraft_enhance_mode_hint" class="redraft-section-hint" style="display: none;"></small>
 
                     <div id="redraft_post_send_options">
                         <label class="checkbox_label" title="Automatically enhance your messages right after you send them.">
@@ -2504,8 +2528,8 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                         </label>
                     </div>
 
-                    <hr style="margin: 8px 0; opacity: 0.2;" />
-                    <small class="redraft-section-hint" style="margin-bottom: 4px;">Rules for enhancing user-written messages.</small>
+                    <hr />
+                    <small class="redraft-section-hint">Rules for enhancing user-written messages.</small>
 
                     <div class="redraft-rules-builtins">
                         <label class="checkbox_label" title="Fix grammatical errors, spelling mistakes, and awkward phrasing while respecting intentional character voice.">
@@ -2537,7 +2561,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                     <hr />
 
                     <div class="redraft-custom-rules-header">
-                        <label class="checkbox_label" style="margin:0;gap:4px;">
+                        <label class="checkbox_label redraft-custom-rules-toggle-label">
                             <input type="checkbox" id="redraft_user_custom_rules_toggle" title="Enable/disable all user custom rules" />
                             <small>Custom Rules (ordered by priority)</small>
                         </label>
@@ -2559,12 +2583,11 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                         <!-- User custom rules injected here by JS -->
                     </div>
 
-                    <hr style="margin: 8px 0; opacity: 0.2;" />
+                    <hr />
 
                     <div class="redraft-form-group">
                         <label for="redraft_user_system_prompt">System Prompt Override</label>
-                        <textarea id="redraft_user_system_prompt" class="text_pole textarea_compact" rows="3"
-                            style="resize:vertical;field-sizing:content;max-height:50vh;"
+                        <textarea id="redraft_user_system_prompt" class="text_pole textarea_compact redraft-system-prompt" rows="3"
                             placeholder="Leave blank for default user enhancement prompt..."></textarea>
                     </div>
                 </div>
@@ -2610,8 +2633,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                     </label>
                     <div class="redraft-form-group">
                         <label for="redraft_system_prompt">System Prompt Override (AI messages)</label>
-                        <textarea id="redraft_system_prompt" class="text_pole textarea_compact" rows="3"
-                            style="resize:vertical;field-sizing:content;max-height:50vh;"
+                        <textarea id="redraft_system_prompt" class="text_pole textarea_compact redraft-system-prompt" rows="3"
                             placeholder="Leave blank for default refinement prompt..."></textarea>
                     </div>
                 </div>
@@ -2622,7 +2644,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
 </div>
 
 <!-- Floating Popout Panel (injected near bottom of body by JS) -->
-<div id="redraft_popout_panel" class="redraft-popout-panel" style="display: none;">
+<div id="redraft_popout_panel" class="redraft-popout-panel" style="display: none;" role="dialog" aria-label="ReDraft quick panel">
     <div class="redraft-popout-header">
         <span class="redraft-popout-title">ReDraft</span>
         <div id="redraft_popout_close" class="dragClose" title="Close">
