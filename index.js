@@ -18,6 +18,17 @@ import {
     lcsTable,
     computeWordDiff,
 } from './lib/text-utils.js';
+import {
+    buildAiRefinePrompt as _buildAiRefinePrompt,
+    buildUserEnhancePrompt as _buildUserEnhancePrompt,
+    POV_INSTRUCTIONS,
+    DEFAULT_SYSTEM_PROMPT,
+    DEFAULT_USER_ENHANCE_SYSTEM_PROMPT,
+} from './lib/prompt-builder.js';
+import {
+    resolveUserMessageIndex,
+    categorizeRefinementError,
+} from './lib/message-utils.js';
 
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
@@ -77,12 +88,7 @@ const defaultSettings = Object.freeze({
     notificationSoundUrl: '', // '' = built-in beep; or URL / data URL for custom
 });
 
-const POV_INSTRUCTIONS = {
-    '1st': 'PERSPECTIVE RULES (MANDATORY): "I/me/my" = the AI narrator character ONLY. "you/your" = the player\'s character ONLY. All other characters = "he/she/they." These assignments are absolute \u2014 do not swap, mix, or shift them. If any pronoun violates this map, fix it.',
-    '1.5': 'PERSPECTIVE RULES (MANDATORY): "I/me/my" = the current POV AI character. "you/your" = the player\'s character \u2014 ALWAYS in descriptions and actions, no exceptions. All other AI characters = "he/she/they." Do not use "I" for the player\'s character under any circumstance. Do not use "he/she/they" for the player\'s character in descriptions or actions \u2014 always "you/your." If any pronoun violates this map, fix it.',
-    '2nd': 'PERSPECTIVE RULES (MANDATORY): "you/your" = the player\'s character ONLY \u2014 all narration addresses them as "you." All AI characters = "he/she/they" in narration (dialogue may use "I"). No AI character uses "I" in narrative voice. If any pronoun violates this map, fix it.',
-    '3rd': 'PERSPECTIVE RULES (MANDATORY): ALL characters (including the player\'s character) use "he/she/they" + names. No "I" in narration. No "you" in narration. If any pronoun violates this map, fix it.',
-};
+// POV_INSTRUCTIONS imported from ./lib/prompt-builder.js
 
 const BUILTIN_RULES = {
     grammar: {
@@ -146,67 +152,9 @@ const BUILTIN_USER_RULES = {
     },
 };
 
-const DEFAULT_SYSTEM_PROMPT = `You are a roleplay prose editor. You refine AI-generated roleplay messages by applying specific rules while preserving the author's creative intent.
+// DEFAULT_SYSTEM_PROMPT imported from ./lib/prompt-builder.js
 
-Core principles:
-- Preserve the original meaning, narrative direction, and emotional tone
-- Preserve the original paragraph structure and sequence of events \u2014 do not reorder content, merge paragraphs, or restructure the narrative flow
-- Edits are surgical: change the minimum necessary to satisfy the active rules. Fix the violating sentence, not the paragraph around it
-- Keep approximately the same length unless a rule specifically calls for cuts
-- Do not add new story elements, actions, or dialogue not present in the original
-- Do not censor, sanitize, or tone down content \u2014 the original's maturity level is intentional
-- Maintain existing formatting conventions (e.g. *asterisks for actions*, "quotes for dialogue")
-- Treat each character as a distinct voice \u2014 do not flatten dialogue into a single register
-- When rules conflict, character voice and narrative intent take priority over technical polish
-
-Output format (MANDATORY \u2014 always follow this structure):
-1. First, output a changelog inside [CHANGELOG]...[/CHANGELOG] tags listing each change you made and which rule motivated it. One line per change. If a rule required no changes, omit it.
-2. Then output the full refined message inside [REFINED]...[/REFINED] tags with no other commentary.
-
-Example:
-[CHANGELOG]
-- Grammar: Fixed \"their\" \u2192 \"they're\" in paragraph 2
-- Repetition: Replaced 3rd use of \"softly\" with \"gently\"
-[/CHANGELOG]
-[REFINED]
-(refined message here)
-[/REFINED]
-
-Do NOT output any analysis, reasoning, or commentary outside the tags. Only output the two tagged blocks.
-
-You will be given the original message, a set of refinement rules to apply, and optionally context about the characters and recent conversation. Apply the rules faithfully.`;
-
-const DEFAULT_USER_ENHANCE_SYSTEM_PROMPT = `You are a roleplay writing assistant. You enhance user-written roleplay messages by fixing grammar, improving prose, and ensuring the writing matches the user's character persona.
-
-Core principles:
-- Fix grammar, spelling, and punctuation errors
-- Preserve the user's creative intent, actions, dialogue content, and story direction exactly
-- Match the user's character voice and persona — their speech patterns, vocabulary, and personality
-- Keep approximately the same length unless a rule specifically calls for cuts
-- Do not add new story elements, actions, or dialogue not present in the original
-- Do not change the meaning, emotional tone, or direction of what the user wrote
-- Do not censor, sanitize, or tone down content — the original's maturity level is intentional
-- Maintain existing formatting conventions (e.g. *asterisks for actions*, "quotes for dialogue")
-- Enhance prose quality while keeping the user's style — fix awkward phrasing, improve flow
-- Ensure consistency with the user's character persona and established lore
-- The user wrote this message as their character — treat every line as intentional role-playing
-
-Output format (MANDATORY — always follow this structure):
-1. First, output a changelog inside [CHANGELOG]...[/CHANGELOG] tags listing each change you made and which rule motivated it. One line per change. If a rule required no changes, omit it.
-2. Then output the full enhanced message inside [REFINED]...[/REFINED] tags with no other commentary.
-
-Example:
-[CHANGELOG]
-- Grammar: Fixed "their" → "they're" in paragraph 2
-- Voice: Adjusted phrasing to match character's casual speech pattern
-[/CHANGELOG]
-[REFINED]
-(enhanced message here)
-[/REFINED]
-
-Do NOT output any analysis, reasoning, or commentary outside the tags. Only output the two tagged blocks.
-
-You will be given the original message, a set of enhancement rules to apply, and context about the user's character persona and the scene. Apply the rules faithfully.`;
+// DEFAULT_USER_ENHANCE_SYSTEM_PROMPT imported from ./lib/prompt-builder.js
 
 /**
  * Retrieve the user's persona description from SillyTavern.
@@ -616,65 +564,15 @@ async function refineViaPlugin(promptText, systemPrompt) {
 
 /**
  * Build the full prompt and system prompt for user-message enhancement.
- * Shared between redraftMessage (post-send) and the pre-send interceptor.
- *
- * @param {object} settings - Extension settings
- * @param {object} context - SillyTavern context
- * @param {object[]} chatArray - The chat message array to search for context
- * @param {number} messageIndex - Index of the user message being enhanced
- * @param {string} strippedMessage - Message text with protected blocks replaced
- * @returns {{ systemPrompt: string, promptText: string }}
+ * Resolves globals (rulesText, personaDesc, systemPrompt) and delegates to
+ * the pure implementation in lib/prompt-builder.js.
  */
 function buildUserEnhancePrompt(settings, context, chatArray, messageIndex, strippedMessage) {
-    const contextParts = [];
-    const char = context.characters?.[context.characterId];
-    const charLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
-    const charDesc = char?.data?.personality || char?.data?.description?.substring(0, charLimit) || '';
-
-    const systemPrompt = settings.userSystemPrompt?.trim() || DEFAULT_USER_ENHANCE_SYSTEM_PROMPT;
-    const rulesText = compileUserRules(settings);
-
-    const personaDesc = getUserPersonaDescription();
-    const personaLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
-    if (context.name1 || personaDesc) {
-        const truncatedPersona = personaDesc ? personaDesc.substring(0, personaLimit) : '';
-        contextParts.push(`Your character (who you are writing as): ${context.name1 || 'Unknown'}${truncatedPersona ? ' \u2014 ' + truncatedPersona : ''}`);
-    }
-
-    if (context.name2 || charDesc) {
-        contextParts.push(`Character you are interacting with: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
-    }
-
-    const prevAiMsg = [...chatArray.slice(0, messageIndex)].reverse().find(m => !m.is_user && m.mes);
-    if (prevAiMsg) {
-        const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
-        contextParts.push(`Last response from ${context.name2 || 'the character'} (for scene context, last ~${tailChars} chars):\n${prevAiMsg.mes.slice(-tailChars)}`);
-    }
-
-    let povKey = settings.pov || 'auto';
-    if (povKey === 'detect' || povKey === 'auto') {
-        const detected = detectPov(strippedMessage);
-        if (detected) {
-            povKey = detected;
-        } else if (povKey === 'detect') {
-            povKey = 'auto';
-        }
-    }
-    if (povKey !== 'auto' && POV_INSTRUCTIONS[povKey]) {
-        contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
-    }
-
-    const contextBlock = contextParts.length > 0
-        ? `Context:\n${contextParts.join('\n\n')}\n\n`
-        : '';
-
-    const promptText = `${contextBlock}Apply the following enhancement rules to the message below. Any [PROTECTED_N] placeholders are protected regions — output them exactly as-is.
-
-Remember: output [CHANGELOG]...[/CHANGELOG] first, then the enhanced message inside [REFINED]...[/REFINED]. No other text outside these tags.
-
-Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
-
-    return { systemPrompt, promptText };
+    return _buildUserEnhancePrompt(settings, context, chatArray, messageIndex, strippedMessage, {
+        rulesText: compileUserRules(settings),
+        personaDesc: getUserPersonaDescription(),
+        systemPrompt: settings.userSystemPrompt?.trim() || DEFAULT_USER_ENHANCE_SYSTEM_PROMPT,
+    });
 }
 
 /**
@@ -751,58 +649,10 @@ async function redraftMessage(messageIndex) {
             console.debug(`${LOG_PREFIX} Enhancing user message ${messageIndex}`);
         } else {
             // ── AI message refinement ──
-            systemPrompt = settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
-            const rulesText = compileRules(settings);
-
-            const contextParts = [];
-            const char = context.characters?.[context.characterId];
-            const charLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
-            const charDesc = char?.data?.personality
-                || char?.data?.description?.substring(0, charLimit)
-                || '';
-
-            if (context.name2 || charDesc) {
-                contextParts.push(`Character: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
-            }
-            if (context.name1) {
-                contextParts.push(`User character: ${context.name1}`);
-            }
-
-            const messagesBeforeThis = chat.slice(0, messageIndex);
-            const lastUserMsgBefore = [...messagesBeforeThis].reverse().find(m => m.is_user && m.mes);
-            if (lastUserMsgBefore) {
-                contextParts.push(`Last user message (what the user said before this response):\n${lastUserMsgBefore.mes}`);
-            }
-
-            const prevAiMsgs = chat.filter((m, i) => !m.is_user && m.mes && i < messageIndex);
-            if (prevAiMsgs.length > 0) {
-                const tailChars = Math.min(800, Math.max(50, settings.previousResponseTailChars ?? 200));
-                const prevTail = prevAiMsgs[prevAiMsgs.length - 1].mes.slice(-tailChars);
-                contextParts.push(`Previous response ending (last ~${tailChars} chars):\n${prevTail}`);
-            }
-
-            let povKey = settings.pov || 'auto';
-            if (povKey === 'detect' || povKey === 'auto') {
-                const detected = detectPov(strippedMessage);
-                if (detected) {
-                    povKey = detected;
-                } else if (povKey === 'detect') {
-                    povKey = 'auto';
-                }
-            }
-            if (povKey !== 'auto' && POV_INSTRUCTIONS[povKey]) {
-                contextParts.push(`Point of view: ${POV_INSTRUCTIONS[povKey]}`);
-            }
-
-            const contextBlock = contextParts.length > 0
-                ? `Context:\n${contextParts.join('\n\n')}\n\n`
-                : '';
-
-            promptText = `${contextBlock}Apply the following refinement rules to the message below. Any [PROTECTED_N] placeholders are protected regions — output them exactly as-is.
-
-Remember: output [CHANGELOG]...[/CHANGELOG] first, then the refined message inside [REFINED]...[/REFINED]. No other text outside these tags.
-
-Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
+            ({ systemPrompt, promptText } = _buildAiRefinePrompt(settings, context, chat, messageIndex, strippedMessage, {
+                rulesText: compileRules(settings),
+                systemPrompt: settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT,
+            }));
         }
 
         const actionVerb = isUserMessage ? 'enhancement' : 'refinement';
@@ -856,59 +706,8 @@ Rules:\n${rulesText}\n\nOriginal message:\n${strippedMessage}`;
 
     } catch (err) {
         console.error(`${LOG_PREFIX} Refinement failed:`, err.message);
-        const msg = err.message || '';
-
-        if (msg.includes('not configured') || msg.includes('Please set up API credentials')) {
-            toastr.error(
-                'ReDraft plugin isn\'t configured. In ReDraft settings, enter API URL, Key, and Model under Separate LLM, then click Save Connection.',
-                'ReDraft',
-                { timeOut: 8000 }
-            );
-        } else if (msg.includes('timed out')) {
-            toastr.error(
-                'Refinement timed out — the LLM took too long to respond. Try a shorter message, a faster model, or check your API provider\'s status page.',
-                'ReDraft',
-                { timeOut: 8000 }
-            );
-        } else if (msg.includes('returned 401') || msg.includes('Unauthorized')) {
-            toastr.error(
-                'API authentication failed (401). Your API key may be invalid or expired — check your key in ReDraft Connection settings.',
-                'ReDraft',
-                { timeOut: 8000 }
-            );
-        } else if (msg.includes('returned 402') || msg.includes('Payment Required') || msg.includes('insufficient')) {
-            toastr.error(
-                'API billing error (402). Your account may be out of credits — check your balance on your API provider\'s dashboard.',
-                'ReDraft',
-                { timeOut: 8000 }
-            );
-        } else if (msg.includes('returned 429') || msg.includes('rate limit') || msg.includes('Rate limit')) {
-            toastr.error(
-                'Rate limited by the API (429). Wait a moment and try again, or switch to a less busy model.',
-                'ReDraft',
-                { timeOut: 6000 }
-            );
-        } else if (msg.includes('returned 404')) {
-            toastr.error(
-                'Model or endpoint not found (404). Check that your model name and API URL are correct in ReDraft Connection settings.',
-                'ReDraft',
-                { timeOut: 8000 }
-            );
-        } else if (msg.includes('returned 503')) {
-            toastr.error(
-                'The API returned Service Unavailable (503). The model\'s backend is temporarily down — try again in a moment or switch to a different model.',
-                'ReDraft',
-                { timeOut: 8000 }
-            );
-        } else if (msg.includes('web page instead of JSON')) {
-            toastr.error(
-                'Server returned HTML instead of JSON. If you use a reverse proxy, check its timeout settings (need at least 90s). Otherwise check the SillyTavern terminal for errors.',
-                'ReDraft',
-                { timeOut: 10000 }
-            );
-        } else {
-            toastr.error(msg || 'Refinement failed — check the browser console for details.', 'ReDraft', { timeOut: 8000 });
-        }
+        const { toastMessage, timeOut } = categorizeRefinementError(err.message);
+        toastr.error(toastMessage, 'ReDraft', { timeOut });
     } finally {
         isRefining = false;
         setMessageButtonLoading(messageIndex, false);
@@ -2334,41 +2133,14 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     const context = SillyTavern.getContext();
     const fullChat = context.chat;
 
-    // Step 1: identify the target message from the interceptor's array
-    let chatMsg = null;
-    for (let i = chat.length - 1; i >= 0; i--) {
-        if (chat[i].is_user && chat[i].mes) {
-            chatMsg = chat[i];
-            break;
-        }
-    }
+    const { chatMsg, realIdx } = resolveUserMessageIndex(chat, fullChat);
     if (!chatMsg) return;
-
-    // Step 2: resolve the real index in fullChat by send_date (objects are clones, not refs)
-    let realIdx = -1;
-    const targetDate = chatMsg.send_date;
-    if (targetDate) {
-        for (let i = fullChat.length - 1; i >= 0; i--) {
-            if (fullChat[i].send_date === targetDate) {
-                realIdx = i;
-                break;
-            }
-        }
-    }
-    // Fallback: match by content for older ST versions without send_date
-    if (realIdx < 0) {
-        for (let i = fullChat.length - 1; i >= 0; i--) {
-            if (fullChat[i].is_user && fullChat[i].mes === chatMsg.mes) {
-                realIdx = i;
-                break;
-            }
-        }
-    }
     if (realIdx < 0) {
         console.warn(`${LOG_PREFIX} [pre-send] Could not resolve real index for user message, skipping`);
         return;
     }
 
+    const targetDate = chatMsg.send_date;
     const message = fullChat[realIdx];
 
     // Skip very short messages (e.g. "ok", "sure", "*nods*")
