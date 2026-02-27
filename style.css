@@ -801,3 +801,24 @@
         font-size: calc(var(--mainFontSize) * 0.8);
     }
 }
+
+/* Textarea enhance button (in-place mode) */
+.redraft-textarea-enhance-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3px 8px;
+    font-size: calc(var(--mainFontSize) * 1.1);
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity var(--animation-duration, 150ms) ease;
+}
+
+.redraft-textarea-enhance-btn:hover {
+    opacity: 1;
+}
+
+.redraft-textarea-enhance-btn.redraft-textarea-loading {
+    opacity: 1;
+    pointer-events: auto;
+}

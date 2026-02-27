@@ -4,6 +4,17 @@ All notable user-facing changes to ReDraft are documented here.
 
 ---
 
+## 2.7.0
+
+**In-Place Enhancement** — enhance your message while it's still in the text box, review and edit before sending.
+
+- **New enhancement mode: In-place** — a third option alongside Post-send and Pre-send. Enhances the text in the textarea without sending it, so you can review, tweak, and send on your terms.
+- **Textarea enhance button** — when In-place mode is selected, a sparkle button appears next to the send area. Click it to enhance your draft.
+- **Popout support** — the popout panel gains an "Enhance Textarea" button when In-place mode is active.
+- Works with all existing enhancement rules, persona voice matching, and PoV settings.
+
+---
+
 ## 2.6.0
 
 **Floating Panel Rework** — the popout panel is now draggable, resizable, and has more quick controls.

@@ -34,7 +34,7 @@ import {
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
-const EXTENSION_VERSION = '2.6.0';
+const EXTENSION_VERSION = '2.7.0';
 
 /**
  * Base URL path for the ReDraft server plugin API. Thin adapter over the
@@ -55,7 +55,7 @@ const defaultSettings = Object.freeze({
     autoRefine: false,
     userEnhanceEnabled: true,
     userAutoEnhance: false,
-    userEnhanceMode: 'post', // 'pre' (intercept before generation) or 'post' (enhance after render)
+    userEnhanceMode: 'post', // 'pre' (intercept before generation), 'post' (enhance after render), or 'inplace' (enhance in textarea before sending)
     userSystemPrompt: '',
     userBuiltInRules: {
         grammar: true,
@@ -537,11 +537,16 @@ function updateEnhanceModeUI(mode) {
         if (mode === 'pre') {
             modeHint.textContent = 'Your message will be enhanced before the AI sees it. Adds 2\u201310s before generation starts (use a fast model to minimize delay). Messages under 20 characters are sent as-is.';
             modeHint.style.display = '';
+        } else if (mode === 'inplace') {
+            modeHint.textContent = 'Use the \u2728 button next to the send area to enhance your message while it\u2019s still in the text box. You can review and edit before sending.';
+            modeHint.style.display = '';
         } else {
             modeHint.textContent = '';
             modeHint.style.display = 'none';
         }
     }
+
+    updateTextareaEnhanceButton(mode);
 }
 
 // ─── Core Refinement (Dual-Mode) ────────────────────────────────────
@@ -749,6 +754,164 @@ async function redraftMessage(messageIndex) {
         if (!refineSucceeded) {
             setPopoutTriggerLoading(false);
         }
+    }
+}
+
+/**
+ * Enhance the text currently in SillyTavern's send textarea without sending.
+ * Replaces the textarea content with the enhanced version so the user can
+ * review and edit before sending.
+ */
+async function enhanceTextarea() {
+    if (isRefining) {
+        cancelRedraft();
+        return;
+    }
+
+    const textarea = document.getElementById('send_textarea');
+    if (!textarea) {
+        toastr.error('Could not find the message textarea', 'ReDraft');
+        return;
+    }
+
+    const originalText = textarea.value.trim();
+    if (!originalText) {
+        toastr.warning('Type a message first', 'ReDraft');
+        return;
+    }
+
+    if (originalText.length < 10) {
+        toastr.info('Message too short to enhance', 'ReDraft');
+        return;
+    }
+
+    const settings = getSettings();
+
+    if (settings.connectionMode === 'plugin' && !pluginAvailable) {
+        toastr.error(
+            'ReDraft server plugin is not available. Install it once (see Install server plugin in ReDraft settings), then restart SillyTavern.',
+            'ReDraft',
+            { timeOut: 8000 }
+        );
+        return;
+    }
+
+    isRefining = true;
+    activeAbortController = new AbortController();
+    const { signal } = activeAbortController;
+    const refineStartTime = Date.now();
+    setPopoutTriggerLoading(true);
+    setTextareaEnhanceButtonLoading(true);
+    toastr.info('Enhancing message\u2026', 'ReDraft');
+
+    try {
+        const { stripped, blocks } = stripProtectedBlocks(originalText, {
+            protectFontTags: settings.protectFontTags,
+        });
+
+        const context = SillyTavern.getContext();
+        const chat = context.chat || [];
+
+        const { systemPrompt, promptText } = buildUserEnhancePrompt(
+            settings, context, chat, chat.length, stripped
+        );
+
+        let refinedText;
+        if (settings.connectionMode === 'plugin') {
+            refinedText = await refineViaPlugin(promptText, systemPrompt, { signal });
+        } else {
+            refinedText = await refineViaST(promptText, systemPrompt, { signal });
+        }
+
+        const { changelog, refined: cleanRefined } = parseChangelog(refinedText);
+        if (changelog) {
+            console.log(`${LOG_PREFIX} [inplace] Changelog:`, changelog);
+        }
+
+        refinedText = restoreProtectedBlocks(cleanRefined, blocks);
+
+        textarea.value = refinedText;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.focus();
+        textarea.style.height = 'auto';
+        textarea.style.height = textarea.scrollHeight + 'px';
+
+        const refineMs = Date.now() - refineStartTime;
+        toastr.success('Message enhanced \u2014 review and send when ready', 'ReDraft');
+        playNotificationSound();
+        setPopoutTriggerLoading(false, refineMs);
+        console.log(`${LOG_PREFIX} [inplace] Textarea enhanced in ${(refineMs / 1000).toFixed(1)}s`);
+
+        if (settings.showDiffAfterRefine) {
+            showDiffPopup(originalText, refinedText, changelog);
+        }
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            toastr.info('Enhancement stopped', 'ReDraft');
+        } else {
+            console.error(`${LOG_PREFIX} [inplace] Enhancement failed:`, err.message);
+            const { toastMessage, timeOut } = categorizeRefinementError(err.message);
+            toastr.error(toastMessage, 'ReDraft', { timeOut });
+        }
+    } finally {
+        isRefining = false;
+        activeAbortController = null;
+        setPopoutTriggerLoading(false);
+        setTextareaEnhanceButtonLoading(false);
+    }
+}
+
+/**
+ * Show or hide the textarea enhance button based on the current mode.
+ * Creates the button if it doesn't exist yet.
+ */
+function updateTextareaEnhanceButton(mode) {
+    const settings = getSettings();
+    const shouldShow = mode === 'inplace' && settings.enabled && settings.userEnhanceEnabled;
+    let btn = document.getElementById('redraft_textarea_enhance');
+
+    if (shouldShow && !btn) {
+        btn = document.createElement('div');
+        btn.id = 'redraft_textarea_enhance';
+        btn.className = 'menu_button interactable redraft-textarea-enhance-btn';
+        btn.title = 'Enhance message (ReDraft)';
+        btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i>';
+        btn.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
+            enhanceTextarea();
+        }, 500, { leading: true, trailing: false }));
+
+        const sendForm = document.getElementById('rightSendForm') || document.getElementById('send_but_sheld')?.parentElement;
+        if (sendForm) {
+            sendForm.insertBefore(btn, sendForm.firstChild);
+        } else {
+            const textarea = document.getElementById('send_textarea');
+            if (textarea?.parentElement) {
+                textarea.parentElement.appendChild(btn);
+            }
+        }
+    }
+
+    if (btn) {
+        btn.style.display = shouldShow ? '' : 'none';
+    }
+
+    const popoutTextareaBtn = document.getElementById('redraft_popout_enhance_textarea');
+    if (popoutTextareaBtn) {
+        popoutTextareaBtn.style.display = shouldShow ? '' : 'none';
+    }
+}
+
+function setTextareaEnhanceButtonLoading(loading) {
+    const btn = document.getElementById('redraft_textarea_enhance');
+    if (!btn) return;
+    if (loading) {
+        btn.classList.add('redraft-textarea-loading');
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        btn.title = 'Enhancing\u2026 click to cancel';
+    } else {
+        btn.classList.remove('redraft-textarea-loading');
+        btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i>';
+        btn.title = 'Enhance message (ReDraft)';
     }
 }
 
@@ -2018,6 +2181,13 @@ function bindSettingsUI() {
         }, 500, { leading: true, trailing: false }));
     }
 
+    const popoutEnhanceTextarea = document.getElementById('redraft_popout_enhance_textarea');
+    if (popoutEnhanceTextarea) {
+        popoutEnhanceTextarea.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
+            enhanceTextarea();
+        }, 500, { leading: true, trailing: false }));
+    }
+
     // Popout: user auto-enhance toggle
     const popoutUserAuto = document.getElementById('redraft_popout_user_auto_enhance');
     if (popoutUserAuto) {
@@ -2055,6 +2225,8 @@ function bindSettingsUI() {
             if (mainEl) {
                 mainEl.value = e.target.value;
                 mainEl.dispatchEvent(new Event('change'));
+            } else {
+                updateEnhanceModeUI(e.target.value);
             }
             saveSettings();
         });
@@ -2324,8 +2496,9 @@ function onUserMessageRendered(messageIndex) {
     addMessageButtons();
     const settings = getSettings();
     if (!settings.enabled || !settings.userEnhanceEnabled || !settings.userAutoEnhance) return;
-    // In pre-send mode, the interceptor handles auto-enhance before generation
-    if (settings.userEnhanceMode === 'pre') return;
+    // In pre-send mode, the interceptor handles auto-enhance before generation.
+    // In inplace mode, enhancement happens before sending via the textarea button.
+    if (settings.userEnhanceMode === 'pre' || settings.userEnhanceMode === 'inplace') return;
     if (isRefining) return;
 
     setTimeout(() => {
@@ -2833,6 +3006,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                         <select id="redraft_user_enhance_mode">
                             <option value="post">Post-send (enhance after message is sent)</option>
                             <option value="pre">Pre-send (enhance before AI sees your message)</option>
+                            <option value="inplace">In-place (enhance in textarea, review before sending)</option>
                         </select>
                     </div>
                     <small id="redraft_enhance_mode_hint" class="redraft-section-hint" style="display: none;"></small>
@@ -3059,6 +3233,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                 <select id="redraft_popout_enhance_mode" class="redraft-popout-mode-select">
                     <option value="pre">Pre-send</option>
                     <option value="post">Post-send</option>
+                    <option value="inplace">In-place</option>
                 </select>
             </div>
         </div>
@@ -3071,6 +3246,10 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
             <div id="redraft_popout_enhance_user" class="menu_button">
                 <i class="fa-solid fa-wand-magic-sparkles"></i>
                 <span>Enhance Last User Message</span>
+            </div>
+            <div id="redraft_popout_enhance_textarea" class="menu_button" style="display: none;">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <span>Enhance Textarea</span>
             </div>
             <div id="redraft_popout_open_settings" class="menu_button">
                 <i class="fa-solid fa-gear"></i>
