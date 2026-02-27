@@ -2064,28 +2064,29 @@ function bindSettingsUI() {
 
     if (popoutOpenSettings) {
         popoutOpenSettings.addEventListener('click', () => {
+            hidePopout();
 
-            togglePopout();
+            const scrollToDrawer = () => {
+                const drawer = document.getElementById('redraft_settings');
+                if (!drawer) return;
+                drawer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                const content = drawer.querySelector('.inline-drawer-content');
+                if (content && getComputedStyle(content).display === 'none') {
+                    const toggle = drawer.querySelector('.inline-drawer-toggle');
+                    if (toggle) toggle.click();
+                }
+            };
 
-            const extPanel = document.getElementById('top-settings-holder');
-            const isPanelOpen = extPanel && extPanel.style.display !== 'none' && !extPanel.classList.contains('displayNone');
+            const drawer = document.getElementById('redraft_settings');
+            const alreadyVisible = drawer && drawer.offsetParent !== null;
 
-            if (!isPanelOpen) {
+            if (alreadyVisible) {
+                scrollToDrawer();
+            } else {
                 const extBtn = document.getElementById('extensionsMenuButton');
                 if (extBtn) extBtn.click();
+                setTimeout(scrollToDrawer, 400);
             }
-
-            setTimeout(() => {
-                const redraftSettings = document.getElementById('redraft_settings');
-                if (redraftSettings) {
-                    redraftSettings.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    const drawerContent = redraftSettings.querySelector('.inline-drawer-content');
-                    if (drawerContent && !drawerContent.classList.contains('open') && getComputedStyle(drawerContent).display === 'none') {
-                        const drawerToggle = redraftSettings.querySelector('.inline-drawer-toggle');
-                        if (drawerToggle) drawerToggle.click();
-                    }
-                }
-            }, 300);
         });
     }
 
