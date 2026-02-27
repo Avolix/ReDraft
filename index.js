@@ -34,7 +34,7 @@ import {
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
-const EXTENSION_VERSION = '2.5.0';
+const EXTENSION_VERSION = '2.7.0';
 
 /**
  * Base URL path for the ReDraft server plugin API. Thin adapter over the
@@ -55,7 +55,7 @@ const defaultSettings = Object.freeze({
     autoRefine: false,
     userEnhanceEnabled: true,
     userAutoEnhance: false,
-    userEnhanceMode: 'post', // 'pre' (intercept before generation) or 'post' (enhance after render)
+    userEnhanceMode: 'post', // 'pre' (intercept before generation), 'post' (enhance after render), or 'inplace' (enhance in textarea before sending)
     userSystemPrompt: '',
     userBuiltInRules: {
         grammar: true,
@@ -93,6 +93,8 @@ const defaultSettings = Object.freeze({
     reasoningContextMode: 'tags', // 'tags' (extract XML tags) or 'raw' (truncated pass-through)
     reasoningContextChars: 1000,
     reasoningContextRawFallback: true, // in 'tags' mode, fall back to raw if no tags found
+    popoutPosition: null, // { x, y } or null = default bottom-right
+    popoutSize: null,     // { width, height } or null = default
 });
 
 // POV_INSTRUCTIONS imported from ./lib/prompt-builder.js
@@ -535,11 +537,16 @@ function updateEnhanceModeUI(mode) {
         if (mode === 'pre') {
             modeHint.textContent = 'Your message will be enhanced before the AI sees it. Adds 2\u201310s before generation starts (use a fast model to minimize delay). Messages under 20 characters are sent as-is.';
             modeHint.style.display = '';
+        } else if (mode === 'inplace') {
+            modeHint.textContent = 'Use the \u2728 button next to the send area to enhance your message while it\u2019s still in the text box. You can review and edit before sending.';
+            modeHint.style.display = '';
         } else {
             modeHint.textContent = '';
             modeHint.style.display = 'none';
         }
     }
+
+    updateTextareaEnhanceButton(mode);
 }
 
 // ─── Core Refinement (Dual-Mode) ────────────────────────────────────
@@ -747,6 +754,164 @@ async function redraftMessage(messageIndex) {
         if (!refineSucceeded) {
             setPopoutTriggerLoading(false);
         }
+    }
+}
+
+/**
+ * Enhance the text currently in SillyTavern's send textarea without sending.
+ * Replaces the textarea content with the enhanced version so the user can
+ * review and edit before sending.
+ */
+async function enhanceTextarea() {
+    if (isRefining) {
+        cancelRedraft();
+        return;
+    }
+
+    const textarea = document.getElementById('send_textarea');
+    if (!textarea) {
+        toastr.error('Could not find the message textarea', 'ReDraft');
+        return;
+    }
+
+    const originalText = textarea.value.trim();
+    if (!originalText) {
+        toastr.warning('Type a message first', 'ReDraft');
+        return;
+    }
+
+    if (originalText.length < 10) {
+        toastr.info('Message too short to enhance', 'ReDraft');
+        return;
+    }
+
+    const settings = getSettings();
+
+    if (settings.connectionMode === 'plugin' && !pluginAvailable) {
+        toastr.error(
+            'ReDraft server plugin is not available. Install it once (see Install server plugin in ReDraft settings), then restart SillyTavern.',
+            'ReDraft',
+            { timeOut: 8000 }
+        );
+        return;
+    }
+
+    isRefining = true;
+    activeAbortController = new AbortController();
+    const { signal } = activeAbortController;
+    const refineStartTime = Date.now();
+    setPopoutTriggerLoading(true);
+    setTextareaEnhanceButtonLoading(true);
+    toastr.info('Enhancing message\u2026', 'ReDraft');
+
+    try {
+        const { stripped, blocks } = stripProtectedBlocks(originalText, {
+            protectFontTags: settings.protectFontTags,
+        });
+
+        const context = SillyTavern.getContext();
+        const chat = context.chat || [];
+
+        const { systemPrompt, promptText } = buildUserEnhancePrompt(
+            settings, context, chat, chat.length, stripped
+        );
+
+        let refinedText;
+        if (settings.connectionMode === 'plugin') {
+            refinedText = await refineViaPlugin(promptText, systemPrompt, { signal });
+        } else {
+            refinedText = await refineViaST(promptText, systemPrompt, { signal });
+        }
+
+        const { changelog, refined: cleanRefined } = parseChangelog(refinedText);
+        if (changelog) {
+            console.log(`${LOG_PREFIX} [inplace] Changelog:`, changelog);
+        }
+
+        refinedText = restoreProtectedBlocks(cleanRefined, blocks);
+
+        textarea.value = refinedText;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.focus();
+        textarea.style.height = 'auto';
+        textarea.style.height = textarea.scrollHeight + 'px';
+
+        const refineMs = Date.now() - refineStartTime;
+        toastr.success('Message enhanced \u2014 review and send when ready', 'ReDraft');
+        playNotificationSound();
+        setPopoutTriggerLoading(false, refineMs);
+        console.log(`${LOG_PREFIX} [inplace] Textarea enhanced in ${(refineMs / 1000).toFixed(1)}s`);
+
+        if (settings.showDiffAfterRefine) {
+            showDiffPopup(originalText, refinedText, changelog);
+        }
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            toastr.info('Enhancement stopped', 'ReDraft');
+        } else {
+            console.error(`${LOG_PREFIX} [inplace] Enhancement failed:`, err.message);
+            const { toastMessage, timeOut } = categorizeRefinementError(err.message);
+            toastr.error(toastMessage, 'ReDraft', { timeOut });
+        }
+    } finally {
+        isRefining = false;
+        activeAbortController = null;
+        setPopoutTriggerLoading(false);
+        setTextareaEnhanceButtonLoading(false);
+    }
+}
+
+/**
+ * Show or hide the textarea enhance button based on the current mode.
+ * Creates the button if it doesn't exist yet.
+ */
+function updateTextareaEnhanceButton(mode) {
+    const settings = getSettings();
+    const shouldShow = mode === 'inplace' && settings.enabled && settings.userEnhanceEnabled;
+    let btn = document.getElementById('redraft_textarea_enhance');
+
+    if (shouldShow && !btn) {
+        btn = document.createElement('div');
+        btn.id = 'redraft_textarea_enhance';
+        btn.className = 'menu_button interactable redraft-textarea-enhance-btn';
+        btn.title = 'Enhance message (ReDraft)';
+        btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i>';
+        btn.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
+            enhanceTextarea();
+        }, 500, { leading: true, trailing: false }));
+
+        const sendForm = document.getElementById('rightSendForm') || document.getElementById('send_but_sheld')?.parentElement;
+        if (sendForm) {
+            sendForm.insertBefore(btn, sendForm.firstChild);
+        } else {
+            const textarea = document.getElementById('send_textarea');
+            if (textarea?.parentElement) {
+                textarea.parentElement.appendChild(btn);
+            }
+        }
+    }
+
+    if (btn) {
+        btn.style.display = shouldShow ? '' : 'none';
+    }
+
+    const popoutTextareaBtn = document.getElementById('redraft_popout_enhance_textarea');
+    if (popoutTextareaBtn) {
+        popoutTextareaBtn.style.display = shouldShow ? '' : 'none';
+    }
+}
+
+function setTextareaEnhanceButtonLoading(loading) {
+    const btn = document.getElementById('redraft_textarea_enhance');
+    if (!btn) return;
+    if (loading) {
+        btn.classList.add('redraft-textarea-loading');
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        btn.title = 'Enhancing\u2026 click to cancel';
+    } else {
+        btn.classList.remove('redraft-textarea-loading');
+        btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i>';
+        btn.title = 'Enhance message (ReDraft)';
     }
 }
 
@@ -1093,23 +1258,191 @@ function togglePopout() {
         return;
     }
 
-    panel.style.display = 'block';
+    panel.style.display = 'flex';
+    applyPopoutPosition(panel);
 
+    const settings = getSettings();
     const autoCheckbox = document.getElementById('redraft_popout_auto');
-    if (autoCheckbox) {
-        autoCheckbox.checked = getSettings().autoRefine;
-    }
+    if (autoCheckbox) autoCheckbox.checked = settings.autoRefine;
+
+    const popoutPov = document.getElementById('redraft_popout_pov');
+    if (popoutPov) popoutPov.value = settings.pov || 'auto';
+
+    const userAutoCheckbox = document.getElementById('redraft_popout_user_auto_enhance');
+    if (userAutoCheckbox) userAutoCheckbox.checked = settings.userAutoEnhance;
+
+    const userPovSelect = document.getElementById('redraft_popout_user_pov');
+    if (userPovSelect) userPovSelect.value = settings.userPov || '1st';
+
+    const enhanceModeSelect = document.getElementById('redraft_popout_enhance_mode');
+    if (enhanceModeSelect) enhanceModeSelect.value = settings.userEnhanceMode || 'post';
+
     updatePopoutStatus();
 
-    // Click-outside to close — store ref so hidePopout() can clean it up
     _popoutOutsideClickRef = (e) => {
         if (!panel.contains(e.target) && !e.target.closest('.redraft-popout-trigger')) {
             hidePopout();
         }
     };
-    // Defer so the opening click doesn't immediately close it
     requestAnimationFrame(() => {
         document.addEventListener('pointerdown', _popoutOutsideClickRef, true);
+    });
+}
+
+const POPOUT_SNAP_THRESHOLD = 20;
+const POPOUT_SNAP_MARGIN = 10;
+const POPOUT_MIN_WIDTH = 220;
+const POPOUT_MAX_WIDTH = 500;
+const POPOUT_MIN_HEIGHT = 200;
+
+function applyPopoutPosition(panel) {
+    const settings = getSettings();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    if (settings.popoutSize) {
+        panel.style.width = Math.min(Math.max(settings.popoutSize.width, POPOUT_MIN_WIDTH), POPOUT_MAX_WIDTH) + 'px';
+        if (settings.popoutSize.height) {
+            panel.style.height = Math.max(settings.popoutSize.height, POPOUT_MIN_HEIGHT) + 'px';
+        }
+    }
+
+    const rect = panel.getBoundingClientRect();
+    let x, y;
+
+    if (settings.popoutPosition) {
+        x = settings.popoutPosition.x;
+        y = settings.popoutPosition.y;
+    } else {
+        x = vw - rect.width - 15;
+        const bottomOffset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--bottomFormBlockSize')) || 0;
+        const iconOffset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--bottomFormIconSize')) || 0;
+        y = vh - rect.height - bottomOffset - iconOffset - 25;
+    }
+
+    x = Math.max(0, Math.min(x, vw - rect.width));
+    y = Math.max(0, Math.min(y, vh - rect.height));
+
+    panel.style.left = x + 'px';
+    panel.style.top = y + 'px';
+}
+
+function clampPanelOnScreen(panel) {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rect = panel.getBoundingClientRect();
+    let x = rect.left;
+    let y = rect.top;
+    x = Math.max(0, Math.min(x, vw - rect.width));
+    y = Math.max(0, Math.min(y, vh - rect.height));
+    panel.style.left = x + 'px';
+    panel.style.top = y + 'px';
+}
+
+function snapToEdge(x, y, w, h) {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    if (x < POPOUT_SNAP_THRESHOLD) x = POPOUT_SNAP_MARGIN;
+    else if (x + w > vw - POPOUT_SNAP_THRESHOLD) x = vw - w - POPOUT_SNAP_MARGIN;
+
+    if (y < POPOUT_SNAP_THRESHOLD) y = POPOUT_SNAP_MARGIN;
+    else if (y + h > vh - POPOUT_SNAP_THRESHOLD) y = vh - h - POPOUT_SNAP_MARGIN;
+
+    return { x, y };
+}
+
+function initPopoutDrag() {
+    const handle = document.getElementById('redraft_popout_drag_handle');
+    const panel = document.getElementById('redraft_popout_panel');
+    if (!handle || !panel) return;
+
+    let startX, startY, startLeft, startTop, dragging = false;
+
+    handle.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('.dragClose')) return;
+        e.preventDefault();
+        dragging = true;
+        panel.classList.add('redraft-dragging');
+        startX = e.clientX;
+        startY = e.clientY;
+        const rect = panel.getBoundingClientRect();
+        startLeft = rect.left;
+        startTop = rect.top;
+        handle.setPointerCapture(e.pointerId);
+    });
+
+    handle.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        panel.style.left = (startLeft + dx) + 'px';
+        panel.style.top = (startTop + dy) + 'px';
+    });
+
+    handle.addEventListener('pointerup', (e) => {
+        if (!dragging) return;
+        dragging = false;
+        panel.classList.remove('redraft-dragging');
+
+        const rect = panel.getBoundingClientRect();
+        const snapped = snapToEdge(rect.left, rect.top, rect.width, rect.height);
+        panel.style.left = snapped.x + 'px';
+        panel.style.top = snapped.y + 'px';
+
+        const s = getSettings();
+        s.popoutPosition = { x: snapped.x, y: snapped.y };
+        saveSettings();
+    });
+}
+
+function initPopoutResize() {
+    const grip = document.getElementById('redraft_popout_resize_grip');
+    const panel = document.getElementById('redraft_popout_panel');
+    if (!grip || !panel) return;
+
+    let startX, startY, startW, startH, startLeft, resizing = false;
+
+    grip.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        resizing = true;
+        panel.classList.add('redraft-dragging');
+        startX = e.clientX;
+        startY = e.clientY;
+        const rect = panel.getBoundingClientRect();
+        startW = rect.width;
+        startH = rect.height;
+        startLeft = rect.left;
+        grip.setPointerCapture(e.pointerId);
+    });
+
+    grip.addEventListener('pointermove', (e) => {
+        if (!resizing) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        const newW = Math.min(Math.max(startW - dx, POPOUT_MIN_WIDTH), POPOUT_MAX_WIDTH);
+        const newH = Math.max(startH + dy, POPOUT_MIN_HEIGHT);
+
+        panel.style.width = newW + 'px';
+        panel.style.height = newH + 'px';
+        panel.style.left = (startLeft + (startW - newW)) + 'px';
+    });
+
+    grip.addEventListener('pointerup', () => {
+        if (!resizing) return;
+        resizing = false;
+        panel.classList.remove('redraft-dragging');
+
+        const rect = panel.getBoundingClientRect();
+        clampPanelOnScreen(panel);
+
+        const s = getSettings();
+        s.popoutSize = { width: Math.round(rect.width), height: Math.round(rect.height) };
+        const clamped = panel.getBoundingClientRect();
+        s.popoutPosition = { x: clamped.left, y: clamped.top };
+        saveSettings();
     });
 }
 
@@ -1385,6 +1718,8 @@ function bindSettingsUI() {
         autoEl.checked = initSettings.autoRefine;
         autoEl.addEventListener('change', (e) => {
             getSettings().autoRefine = e.target.checked;
+            const popoutEl = document.getElementById('redraft_popout_auto');
+            if (popoutEl) popoutEl.checked = e.target.checked;
             saveSettings();
             updatePopoutAutoState();
         });
@@ -1407,6 +1742,8 @@ function bindSettingsUI() {
         userAutoEnhanceEl.checked = initSettings.userAutoEnhance;
         userAutoEnhanceEl.addEventListener('change', (e) => {
             getSettings().userAutoEnhance = e.target.checked;
+            const popoutEl = document.getElementById('redraft_popout_user_auto_enhance');
+            if (popoutEl) popoutEl.checked = e.target.checked;
             saveSettings();
         });
     }
@@ -1418,6 +1755,8 @@ function bindSettingsUI() {
         updateEnhanceModeUI(initSettings.userEnhanceMode || 'post');
         enhanceModeEl.addEventListener('change', (e) => {
             getSettings().userEnhanceMode = e.target.value;
+            const popoutEl = document.getElementById('redraft_popout_enhance_mode');
+            if (popoutEl) popoutEl.value = e.target.value;
             saveSettings();
             updateEnhanceModeUI(e.target.value);
         });
@@ -1429,6 +1768,8 @@ function bindSettingsUI() {
         userPovEl.value = initSettings.userPov || '1st';
         userPovEl.addEventListener('change', (e) => {
             getSettings().userPov = e.target.value;
+            const popoutEl = document.getElementById('redraft_popout_user_pov');
+            if (popoutEl) popoutEl.value = e.target.value;
             saveSettings();
         });
     }
@@ -1840,41 +2181,90 @@ function bindSettingsUI() {
         }, 500, { leading: true, trailing: false }));
     }
 
+    const popoutEnhanceTextarea = document.getElementById('redraft_popout_enhance_textarea');
+    if (popoutEnhanceTextarea) {
+        popoutEnhanceTextarea.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
+            enhanceTextarea();
+        }, 500, { leading: true, trailing: false }));
+    }
+
+    // Popout: user auto-enhance toggle
+    const popoutUserAuto = document.getElementById('redraft_popout_user_auto_enhance');
+    if (popoutUserAuto) {
+        popoutUserAuto.checked = initSettings.userAutoEnhance;
+        popoutUserAuto.addEventListener('change', (e) => {
+            const s = getSettings();
+            s.userAutoEnhance = e.target.checked;
+            const mainEl = document.getElementById('redraft_user_auto_enhance');
+            if (mainEl) mainEl.checked = e.target.checked;
+            saveSettings();
+        });
+    }
+
+    // Popout: user PoV selector
+    const popoutUserPov = document.getElementById('redraft_popout_user_pov');
+    if (popoutUserPov) {
+        popoutUserPov.value = initSettings.userPov || '1st';
+        popoutUserPov.addEventListener('change', (e) => {
+            const s = getSettings();
+            s.userPov = e.target.value;
+            const mainEl = document.getElementById('redraft_user_pov');
+            if (mainEl) mainEl.value = e.target.value;
+            saveSettings();
+        });
+    }
+
+    // Popout: enhance mode selector
+    const popoutEnhanceMode = document.getElementById('redraft_popout_enhance_mode');
+    if (popoutEnhanceMode) {
+        popoutEnhanceMode.value = initSettings.userEnhanceMode || 'post';
+        popoutEnhanceMode.addEventListener('change', (e) => {
+            const s = getSettings();
+            s.userEnhanceMode = e.target.value;
+            const mainEl = document.getElementById('redraft_user_enhance_mode');
+            if (mainEl) {
+                mainEl.value = e.target.value;
+                mainEl.dispatchEvent(new Event('change'));
+            } else {
+                updateEnhanceModeUI(e.target.value);
+            }
+            saveSettings();
+        });
+    }
+
     const popoutOpenSettings = document.getElementById('redraft_popout_open_settings');
 
     if (popoutOpenSettings) {
         popoutOpenSettings.addEventListener('click', () => {
+            hidePopout();
 
-            togglePopout();
-
-            // Check if extensions panel is already visible
-            const extPanel = document.getElementById('top-settings-holder');
-            const isPanelOpen = extPanel && extPanel.style.display !== 'none' && !extPanel.classList.contains('displayNone');
-
-
-            if (!isPanelOpen) {
-                // Only click if panel is closed
-                const extBtn = document.getElementById('extensionsMenuButton');
-
-                if (extBtn) extBtn.click();
-            }
-
-            // Scroll to and open the ReDraft drawer
-            setTimeout(() => {
-                const redraftSettings = document.getElementById('redraft_settings');
-
-                if (redraftSettings) {
-                    redraftSettings.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    // Open the drawer if it's closed
-                    const drawerContent = redraftSettings.querySelector('.inline-drawer-content');
-                    if (drawerContent && !drawerContent.classList.contains('open') && getComputedStyle(drawerContent).display === 'none') {
-                        const drawerToggle = redraftSettings.querySelector('.inline-drawer-toggle');
-                        if (drawerToggle) drawerToggle.click();
-                    }
+            const scrollToDrawer = () => {
+                const drawer = document.getElementById('redraft_settings');
+                if (!drawer) return;
+                drawer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                const content = drawer.querySelector('.inline-drawer-content');
+                if (content && getComputedStyle(content).display === 'none') {
+                    const toggle = drawer.querySelector('.inline-drawer-toggle');
+                    if (toggle) toggle.click();
                 }
-            }, 300);
+            };
+
+            const drawer = document.getElementById('redraft_settings');
+            const alreadyVisible = drawer && drawer.offsetParent !== null;
+
+            if (alreadyVisible) {
+                scrollToDrawer();
+            } else {
+                const extBtn = document.getElementById('extensionsMenuButton');
+                if (extBtn) extBtn.click();
+                setTimeout(scrollToDrawer, 400);
+            }
         });
     }
+
+    // Initialize popout drag & resize
+    initPopoutDrag();
+    initPopoutResize();
 
     // Render custom rules (AI refine + user enhance)
     renderCustomRules();
@@ -2106,8 +2496,9 @@ function onUserMessageRendered(messageIndex) {
     addMessageButtons();
     const settings = getSettings();
     if (!settings.enabled || !settings.userEnhanceEnabled || !settings.userAutoEnhance) return;
-    // In pre-send mode, the interceptor handles auto-enhance before generation
-    if (settings.userEnhanceMode === 'pre') return;
+    // In pre-send mode, the interceptor handles auto-enhance before generation.
+    // In inplace mode, enhancement happens before sending via the textarea button.
+    if (settings.userEnhanceMode === 'pre' || settings.userEnhanceMode === 'inplace') return;
     if (isRefining) return;
 
     setTimeout(() => {
@@ -2615,6 +3006,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
                         <select id="redraft_user_enhance_mode">
                             <option value="post">Post-send (enhance after message is sent)</option>
                             <option value="pre">Pre-send (enhance before AI sees your message)</option>
+                            <option value="inplace">In-place (enhance in textarea, review before sending)</option>
                         </select>
                     </div>
                     <small id="redraft_enhance_mode_hint" class="redraft-section-hint" style="display: none;"></small>
@@ -2792,41 +3184,81 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
 
 <!-- Floating Popout Panel (injected near bottom of body by JS) -->
 <div id="redraft_popout_panel" class="redraft-popout-panel" style="display: none;" role="dialog" aria-label="ReDraft quick panel">
-    <div class="redraft-popout-header">
+    <div class="redraft-popout-header" id="redraft_popout_drag_handle">
+        <i class="fa-solid fa-grip-lines redraft-drag-icon"></i>
         <span class="redraft-popout-title">ReDraft</span>
         <div id="redraft_popout_close" class="dragClose" title="Close">
             <i class="fa-solid fa-xmark"></i>
         </div>
     </div>
     <div class="redraft-popout-body">
-        <label class="checkbox_label">
-            <input type="checkbox" id="redraft_popout_auto" />
-            <span>Auto-refine</span>
-        </label>
-        <div class="redraft-popout-pov">
-            <small>PoV</small>
-            <select id="redraft_popout_pov">
-                <option value="auto">Auto</option>
-                <option value="detect">Detect</option>
-                <option value="1st">1st</option>
-                <option value="1.5">1.5th</option>
-                <option value="2nd">2nd</option>
-                <option value="3rd">3rd</option>
-            </select>
+        <div class="redraft-popout-section">
+            <div class="redraft-popout-row">
+                <label class="checkbox_label">
+                    <input type="checkbox" id="redraft_popout_auto" />
+                    <span>Auto-refine</span>
+                </label>
+                <div class="redraft-popout-pov">
+                    <small>PoV</small>
+                    <select id="redraft_popout_pov">
+                        <option value="auto">Auto</option>
+                        <option value="detect">Detect</option>
+                        <option value="1st">1st</option>
+                        <option value="1.5">1.5th</option>
+                        <option value="2nd">2nd</option>
+                        <option value="3rd">3rd</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        <div class="redraft-popout-section">
+            <div class="redraft-popout-row">
+                <label class="checkbox_label">
+                    <input type="checkbox" id="redraft_popout_user_auto_enhance" />
+                    <span>Auto-enhance</span>
+                </label>
+                <div class="redraft-popout-pov">
+                    <small>PoV</small>
+                    <select id="redraft_popout_user_pov">
+                        <option value="auto">Auto</option>
+                        <option value="detect">Detect</option>
+                        <option value="1st">1st</option>
+                        <option value="2nd">2nd</option>
+                        <option value="3rd">3rd</option>
+                    </select>
+                </div>
+            </div>
+            <div class="redraft-popout-row">
+                <small class="redraft-popout-mode-label">Mode</small>
+                <select id="redraft_popout_enhance_mode" class="redraft-popout-mode-select">
+                    <option value="pre">Pre-send</option>
+                    <option value="post">Post-send</option>
+                    <option value="inplace">In-place</option>
+                </select>
+            </div>
         </div>
         <div id="redraft_popout_status" class="redraft-popout-status"></div>
-        <div id="redraft_popout_refine" class="menu_button">
-            <i class="fa-solid fa-pen-nib"></i>
-            <span>Refine Last AI Message</span>
+        <div class="redraft-popout-actions">
+            <div id="redraft_popout_refine" class="menu_button">
+                <i class="fa-solid fa-pen-nib"></i>
+                <span>Refine Last AI Message</span>
+            </div>
+            <div id="redraft_popout_enhance_user" class="menu_button">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <span>Enhance Last User Message</span>
+            </div>
+            <div id="redraft_popout_enhance_textarea" class="menu_button" style="display: none;">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <span>Enhance Textarea</span>
+            </div>
+            <div id="redraft_popout_open_settings" class="menu_button">
+                <i class="fa-solid fa-gear"></i>
+                <span>Full Settings</span>
+            </div>
         </div>
-        <div id="redraft_popout_enhance_user" class="menu_button">
-            <i class="fa-solid fa-wand-magic-sparkles"></i>
-            <span>Enhance Last User Message</span>
-        </div>
-        <div id="redraft_popout_open_settings" class="menu_button">
-            <i class="fa-solid fa-gear"></i>
-            <span>Full Settings</span>
-        </div>
+    </div>
+    <div id="redraft_popout_resize_grip" class="redraft-resize-grip" title="Resize">
+        <i class="fa-solid fa-grip-lines-vertical"></i>
     </div>
 </div>`;
 

@@ -4,6 +4,31 @@ All notable user-facing changes to ReDraft are documented here.
 
 ---
 
+## 2.7.0
+
+**In-Place Enhancement** — enhance your message while it's still in the text box, review and edit before sending.
+
+- **New enhancement mode: In-place** — a third option alongside Post-send and Pre-send. Enhances the text in the textarea without sending it, so you can review, tweak, and send on your terms.
+- **Textarea enhance button** — when In-place mode is selected, a sparkle button appears next to the send area. Click it to enhance your draft.
+- **Popout support** — the popout panel gains an "Enhance Textarea" button when In-place mode is active.
+- Works with all existing enhancement rules, persona voice matching, and PoV settings.
+
+---
+
+## 2.6.0
+
+**Floating Panel Rework** — the popout panel is now draggable, resizable, and has more quick controls.
+
+- **Draggable** — grab the header to move the panel anywhere on screen. Position is remembered across sessions.
+- **Resizable** — drag the bottom-left corner grip to resize. Size is remembered across sessions.
+- **Snap-to-edge** — when dragged near a screen edge, the panel snaps into place with a small margin.
+- **Auto-enhance toggle** — the popout now includes a quick toggle for user message auto-enhancement.
+- **User PoV selector** — change the user message Point of View directly from the popout.
+- **Enhance mode selector** — switch between Pre-send and Post-send enhancement mode without opening full settings.
+- **Visual overhaul** — new sectioned layout with drag handle, resize grip, and improved spacing.
+
+---
+
 ## 2.5.0
 
 **Reasoning Context** — ReDraft can now read the generating model's Chain of Thought to extract scene settings.
