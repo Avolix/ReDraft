@@ -1,78 +1,20 @@
-# Simulacra + ReDraft — Setup Tutorial
+# ReDraft — Setup & Usage Tutorial
 
-Everything you need to go from a fresh SillyTavern install to a working Simulacra setup. No coding required.
-
----
-
-## What You're Installing
-
-**Simulacra** is a completion preset — a big JSON file that tells the AI *how* to write. It handles narrative style, point of view, pacing, romance difficulty, NSFW behavior, Chain of Thought reasoning, and a lot more. You load it once and it runs in the background.
-
-**ReDraft** is a SillyTavern extension that proofreads every AI response after it's generated. It catches repetition, echo, slop, and other common LLM failures, then fixes them automatically. Think of it as a second pass that cleans up what the AI wrote.
-
-**Simulacra ReDraft Rules** are a set of custom rules specifically built for Simulacra. They teach ReDraft what to look for in Simulacra's output (e.g., environmental padding, interiority spirals, NSFW stalling). You import them into ReDraft as a JSON file.
-
-**NSFW Tags Lorebook** is an optional world info book that gives the AI detailed instructions for specific NSFW dynamics and acts. It activates automatically based on keywords in your messages — you don't need to manage it.
+A friendly guide to installing ReDraft, understanding what everything does, and getting the most out of it. No technical knowledge required.
 
 ---
 
-## Prerequisites
+## What Is ReDraft?
 
-- **SillyTavern** installed and running (any recent version)
-- **An AI API** connected and working (OpenAI, Claude, OpenRouter, a local model, etc.)
-- A model that supports **extended thinking** is strongly recommended (Simulacra is built around Chain of Thought reasoning)
-- A model with a **large context window** (Simulacra is configured for up to 2M tokens)
+ReDraft is a SillyTavern extension that proofreads AI-generated messages. After the AI writes a response, ReDraft sends it through a second LLM pass with a set of quality rules — things like "remove echo," "fix repetition," "clean up prose" — and writes the improved version back into chat.
 
-If you can already chat with a character in SillyTavern, you're good to go.
+Think of it as an editor that reads every response right after it arrives and fixes the common problems LLMs tend to produce.
 
----
-
-## Step 1: Download the Files
-
-Go to the [Simulacra GitHub releases page](https://github.com/MeowCatboyMeow/Simulacra/releases) or download directly from the repo. You need:
-
-| File | What it is | Required? |
-|------|-----------|-----------|
-| `Simulacra_v10.4.json` | The preset | Yes |
-| `Special Sections/Simulacra ReDraft Rules V4.json` | Custom rules for ReDraft | Yes (if using ReDraft) |
-| `Special Sections/Simulacra NSFW Tags V3.json` | NSFW lorebook | Optional |
-
-Save them somewhere you can find them (Desktop, Downloads, wherever).
+It can also enhance your own messages before or after you send them — fixing grammar, matching your persona's voice, expanding brief inputs, and more.
 
 ---
 
-## Step 2: Import the Simulacra Preset
-
-1. In SillyTavern, look at the top bar and click the **AI Response Configuration** icon (looks like sliders/bars).
-2. At the top of the panel that opens, you'll see a dropdown for selecting presets, and next to it a row of small buttons.
-3. Click the **Import** button (the upload icon — arrow pointing up into a tray).
-4. Navigate to where you saved `Simulacra_v10.4.json` and select it.
-5. It should now appear in your preset dropdown as **Simulacra_v10.4**. Select it if it isn't already selected.
-
-That's it for the preset. Simulacra is now active.
-
-### Quick sanity check
-
-Open the preset and scroll through the prompt list. You should see sections like "Primers (Loom)," "State," "PoVs," "Length," "Relationship Difficulty," and many more. If you see all of that, the import worked.
-
----
-
-## Step 3: Import the NSFW Tags Lorebook (Optional)
-
-Skip this step if you don't want NSFW content or prefer to handle it yourself.
-
-1. In SillyTavern, open the **World Info** panel (the globe icon in the top bar).
-2. Click **Import** (the upload icon).
-3. Select `Simulacra NSFW Tags V3.json`.
-4. The lorebook will appear in your world info list. Make sure it's **enabled** (toggled on).
-
-The lorebook is keyword-activated. When your chat messages contain trigger words (like specific kinks, dynamics, or acts), the matching entries automatically inject genre conventions into the AI's context. You don't need to edit or manage it — just leave it on.
-
-**Tip:** If you want to see what's in the lorebook, open it and browse the entries. Each one describes camera angles, pacing, key beats, and what to avoid for that particular dynamic or act.
-
----
-
-## Step 4: Install the ReDraft Extension
+## Step 1: Install ReDraft
 
 1. In SillyTavern, click the **Extensions** panel (the puzzle piece icon in the top bar).
 2. At the top, you'll see **Install Extension** with a text field.
@@ -83,131 +25,241 @@ https://github.com/MeowCatboyMeow/ReDraft
 ```
 
 4. Click **Install** (or press Enter).
-5. SillyTavern will download and install ReDraft. You should see it appear in your extensions list.
+5. ReDraft will appear in your extensions list.
 
-ReDraft works immediately using your current SillyTavern API connection — no extra setup needed. If you want to use a separate (cheaper/faster) model just for refinement, see the "Optional: Separate LLM" section at the end.
-
----
-
-## Step 5: Import the Simulacra ReDraft Rules
-
-This is the step where you load Simulacra's custom rules into ReDraft. It's a JSON import — here's exactly how:
-
-1. In SillyTavern, open the **Extensions** panel (puzzle piece icon).
-2. Find **ReDraft** in the list and expand it to open its settings.
-3. Scroll down until you see the **Custom Rules** section. It has a header that says "Custom Rules (ordered by priority)" with some small buttons next to it.
-4. Click the **Import** button (the file-import icon — a page with an arrow). It's the first of the small buttons next to the "Custom Rules" label.
-5. A file picker will open. Navigate to where you saved `Simulacra ReDraft Rules V4.json` and select it.
-6. A confirmation dialog will appear saying something like *'Import "Simulacra ReDraft Rules" (17 rules)?'*
-   - If you have no existing custom rules: it will just import them.
-   - If you already have custom rules: click **OK** to replace them, or **Cancel** to append the Simulacra rules after your existing ones.
-7. You should see a success toast message: *"Imported 17 rules from Simulacra ReDraft Rules."*
-
-You'll now see 17 rules listed in the Custom Rules section. Some are enabled by default and some are disabled — that's intentional. The enabled ones cover the most common issues; the disabled ones are situational (NSFW-specific, anthro characters, etc.) and you can toggle them on as needed.
-
-### Disable Overlapping Built-in Rules
-
-The Simulacra custom rules replace some of ReDraft's built-in rules. To avoid double-processing:
-
-1. Scroll up in ReDraft's settings to the **Built-in Rules** section (above Custom Rules).
-2. **Disable** these three built-in rules:
-   - **Echo** (the Simulacra "Echo Ban" custom rule replaces this)
-   - **Prose** (the Simulacra "Anti-Slop" custom rule replaces this)
-   - **Ending** (the Simulacra "Response Ending Enforcement" custom rule replaces this)
-3. **Keep the built-in PoV rule enabled** — it covers different things than the Simulacra PoV rule, and they work well together.
-
-### Enable Reasoning Context (Recommended)
-
-If your model supports extended thinking (most models Simulacra is designed for do), turn this on so ReDraft can read the AI's Chain of Thought:
-
-1. In ReDraft settings, look for **Include reasoning context** (in the Advanced section).
-2. Toggle it **on**.
-3. Leave it on **Tag extraction** mode (the default) — this pulls Simulacra's structured tags from the AI's thinking and passes them to ReDraft for smarter rule enforcement.
-
-This helps rules like Society Consistency, NSFW Scene Integrity, Conviction Enforcement, and NSFW Prose Quality work much better, because they can see the AI's scene analysis instead of guessing from the text alone.
+That's it — ReDraft is installed and working. It uses your current SillyTavern API connection by default, so there's nothing else to configure unless you want to.
 
 ---
 
-## Step 6: You're Done — Start Chatting
+## Step 2: Find the Settings
 
-Load any character card and send a message. Simulacra handles the rest:
+1. Open the **Extensions** panel (puzzle piece icon).
+2. Find **ReDraft** in the list.
+3. Click the header to expand it.
 
-- The preset tells the AI how to think and write.
-- The lorebook (if enabled) adds NSFW conventions when relevant keywords appear.
-- ReDraft automatically proofreads and fixes the AI's response after it arrives.
-
-You'll see a small ReDraft indicator when refinement is happening. After it finishes, you can click the message to see a diff of what changed, and undo if you don't like the changes.
-
----
-
-## Configuring Simulacra's Settings
-
-Simulacra has a bunch of toggleable options organized as radio groups (pick one per group). You configure these in the preset's prompt list. Here's what you can tweak:
-
-| Setting | What it controls | Default |
-|---------|-----------------|---------|
-| **Point of View** | Narrative perspective (1st, 1.5th hybrid, 2nd, 3rd limited, 3rd omni) | Hybrid 1.5th Person |
-| **Length** | Response length behavior, plus optional length modifiers (+150, +300) | Adaptive Beat-Responsive |
-| **Relationship Difficulty** | How easily romance develops (Don Juan → Slow-Burn → NTR) | In-Lore |
-| **Sex Difficulty** | NSFW threshold (Effortless → Fade to Black) | In-Lore |
-| **Power Dynamic** | Default dominance dynamics in intimate scenes | In-Lore |
-| **Society** | World-level social dynamics (Patriarchal / Egalitarian / Matriarchal) | In-Lore |
-| **Character Conviction** | How firmly characters hold their opinions | In-Character |
-| **Pacing / Difficulty / Canon / Language / Agency** | Various other narrative controls | Check the preset |
-
-"In-Lore" means "follow whatever the character card and world info say" — it's the neutral default that doesn't override anything.
-
-To change a setting: open the preset, find the section (they're labeled with `===` headers like `===PoVs===`), and enable the option you want. **Only enable one option per group** — they're radio buttons, not checkboxes.
+You'll see several collapsible sections:
+- **Connection** — how ReDraft talks to the LLM
+- **Rules (AI Refine)** — what to check when refining AI messages
+- **Enhance (User Messages)** — settings for improving your own messages
+- **Advanced** — point of view, timeouts, reasoning context, and more
 
 ---
 
-## Optional: Using a Separate LLM for ReDraft
+## How to Use ReDraft
 
-By default, ReDraft uses whatever API connection SillyTavern is already using. If you want to use a different (usually cheaper or faster) model specifically for refinement — for example, `gpt-4o-mini` while your main chat uses Claude — you can set that up with a one-time server plugin install.
+ReDraft gives you four ways to trigger a refinement:
 
-This is completely optional. ReDraft works fine with your existing connection.
+### Auto-Refine
+Turn this on and every AI response gets refined automatically as soon as it arrives. Toggle it in:
+- The **floating popout** (the small pen icon in the bottom-right corner of your screen), or
+- ReDraft settings under the Connection section
 
-1. Open a terminal (PowerShell, CMD, or your OS terminal).
-2. Navigate to your SillyTavern folder:
+### Per-Message Button
+Every AI message gets a small ReDraft button in its action bar (the row of icons at the bottom of each message bubble). Click it to refine that specific message.
+
+### Floating Popout
+Click the pen icon in the bottom-right corner of SillyTavern. This opens a small panel where you can:
+- Refine the last AI message
+- Enhance the last user message
+- Toggle auto-refine
+- Change the point of view
+- Open full settings
+
+### Slash Command
+Type `/redraft` in the chat input to refine the last AI message. Type `/enhance` to enhance the last user message.
+
+---
+
+## Understanding the Rules
+
+### Built-in Rules (AI Refine)
+
+These are ready to go out of the box. Toggle them on or off in **Rules (AI Refine)**:
+
+| Rule | What it does |
+|------|-------------|
+| **Fix grammar & spelling** | Catches typos, grammar errors, and awkward phrasing. Preserves intentional dialect and character speech patterns. |
+| **Remove echo & restatement** | Removes sentences where the AI restates or paraphrases what you just said instead of advancing the scene. |
+| **Reduce repetition** | Catches repeated gestures, sentence structures, and emotional beats within the response (and compared to the previous one). |
+| **Maintain character voice** | Ensures each character's dialogue stays distinct and consistent with their personality. |
+| **Clean up prose** | Fixes common AI writing problems: somatic cliches ("breath hitching"), purple prose, filter words, telling over showing. |
+| **Fix formatting** | Fixes orphaned formatting marks, inconsistent style, and dialogue punctuation errors. |
+| **Fix crafted endings** | Removes theatrical "dismount" endings — those crafted landing lines that make every response feel like a chapter conclusion. |
+| **Maintain lore consistency** | Flags glaring contradictions with established character and world information. |
+
+### Custom Rules
+
+Custom rules are where things get powerful. You can write your own rules, import rule sets that other people have made, and reorder them by priority.
+
+Custom rules appear below the built-in rules in the **Rules (AI Refine)** section.
+
+---
+
+## How to Import Custom Rules
+
+This is the most common question, so here's the step-by-step:
+
+1. Open the **Extensions** panel (puzzle piece icon) and expand **ReDraft**.
+2. Open the **Rules (AI Refine)** section.
+3. Scroll down past the built-in rule checkboxes until you see **Custom Rules (ordered by priority)**. Next to that label, there are three small buttons.
+4. Click the first button — the **Import** icon (a page with an arrow pointing in). It looks like this: `[file-import icon]`
+5. A file picker will open. Select the `.json` file containing the rules you want to import.
+6. A confirmation dialog will appear showing the rule set name and how many rules it contains.
+   - **If you have no existing custom rules:** it imports them directly.
+   - **If you already have custom rules:** click **OK** to replace your existing rules with the imported ones, or click **Cancel** to append the new rules after your existing ones.
+7. You'll see a success toast message confirming how many rules were imported.
+
+The imported rules will appear in the Custom Rules list. Each rule has:
+- A **checkbox** to enable/disable it
+- A **label** (the rule name)
+- A **drag handle** to reorder it (higher = checked first)
+- An **expand arrow** to view/edit the rule text
+
+### Exporting Your Rules
+
+Click the **Export** button (the page with an arrow pointing out — second button next to "Custom Rules") to download your current custom rules as a JSON file. Useful for sharing or backing up.
+
+### Writing Your Own Rules
+
+Click the **+** button (third button next to "Custom Rules") to add a blank rule. Give it a label and write your instruction in the text area. Rules are plain English instructions telling the LLM what to look for and how to fix it.
+
+---
+
+## User Message Enhancement
+
+ReDraft can also improve your messages — not just the AI's. Open the **Enhance (User Messages)** section to configure it.
+
+1. Check **Enable user message enhancement** to turn it on.
+2. Choose a mode:
+   - **Post-send** (default) — your message is sent as-is, then enhanced afterward. The AI sees your original text.
+   - **Pre-send** — your message is enhanced *before* the AI sees it. Adds a few seconds of latency, but the AI always gets your polished version.
+3. Set the **Point of View** for your messages (defaults to 1st person).
+
+### User Enhancement Built-in Rules
+
+| Rule | What it does |
+|------|-------------|
+| **Fix grammar & spelling** | Catches errors in your writing while respecting your character's voice. |
+| **Match persona voice** | Adjusts your writing to match your persona description's speech patterns. |
+| **Improve prose** | Smooths out clunky phrasing and adds vividness without changing your meaning. |
+| **Fix formatting** | Fixes formatting marks and ensures consistent conventions. |
+| **Check scene continuity** | Checks that your actions match the established scene. |
+| **Expand brief messages** | If you write a 1-2 sentence message, expands it with sensory detail, body language, and interiority. |
+
+User messages also have their own custom rules section (separate from the AI refine rules) with the same import/export/add buttons.
+
+---
+
+## Advanced Settings
+
+Open the **Advanced** section for these options:
+
+### Point of View (AI Messages)
+Controls what perspective ReDraft enforces when refining AI responses. Options:
+- **Auto** — no PoV instruction sent (use this if your preset handles PoV)
+- **Detect** — ReDraft reads the message and figures out the PoV
+- **1st / 1.5th / 2nd / 3rd person** — explicitly enforce a perspective
+
+### Character Context
+How much of the character description to include when refining (500, 1000, or 2000 characters). More context helps ReDraft maintain character voice but uses more tokens.
+
+### Previous Response Tail
+How many characters of the previous AI response to include (100, 200, or 400). Helps catch cross-message repetition.
+
+### Request Timeout
+How long to wait for the refinement LLM to respond (60–300 seconds). If you use a thinking model or a slow API, increase this. Default is 120 seconds.
+
+### Protect Font/Color Tags
+If your messages use `<font>` tags for colored text, enable this to prevent ReDraft from stripping them.
+
+### Include Reasoning Context
+If your AI model uses extended thinking (Chain of Thought), enabling this lets ReDraft read the model's reasoning and extract useful context from it.
+
+- **Extract tags** (default) — pulls structured XML tags from the thinking content and passes them as scene context. Token-efficient.
+- **Raw pass-through** — passes the truncated reasoning text directly. Use this if the model doesn't use structured tags.
+- **Fall back to raw** — in tag mode, automatically switches to raw if no tags are found.
+
+### System Prompt Override
+Replace ReDraft's default system prompt with your own. Leave blank to use the default (recommended unless you know what you're doing).
+
+---
+
+## Viewing Changes
+
+After ReDraft refines a message, you can see exactly what changed:
+
+- **Diff view** — click the message's ReDraft button to see a word-level diff highlighting additions (green) and removals (red).
+- **Changelog** — ReDraft generates a brief explanation of which rules triggered and what was changed.
+- **Undo** — one click restores the original message. Available on any refined message.
+
+---
+
+## Optional: Using a Separate LLM
+
+By default, ReDraft uses whatever API SillyTavern is already connected to. If you want to use a different model specifically for refinement — for example, a faster or cheaper model like `gpt-4o-mini` — you can set up the server plugin.
+
+This is completely optional. ReDraft works perfectly fine with your existing connection.
+
+### Quick Setup
+
+1. Open a terminal.
+2. Navigate to your SillyTavern folder.
+3. Run the installer:
+
+**Windows:**
 
 ```
 cd C:\Path\To\Your\SillyTavern
-```
-
-3. Run the installer:
-
-```
 node data\default-user\extensions\third-party\redraft\server-plugin\install.js
+```
+
+**Linux / macOS:**
+
+```
+cd /path/to/your/SillyTavern
+node data/default-user/extensions/third-party/redraft/server-plugin/install.js
 ```
 
 4. Restart SillyTavern.
 5. In ReDraft settings, under **Connection**, choose **Separate LLM (server plugin)**.
-6. Enter your API URL, API Key, and Model name.
-7. Click **Save Connection**, then **Test Connection** to confirm it works.
+6. Enter your **API URL** (e.g. `https://api.openai.com/v1`), **API Key**, and **Model**.
+7. Click **Save Key**, then **Test** to confirm it works.
+8. Click **Models** to load a dropdown list of available models from your API.
 
-For more details and troubleshooting (Docker, reverse proxy, multi-user setups), see the full [INSTALL_PLUGIN.md](https://github.com/MeowCatboyMeow/ReDraft/blob/main/INSTALL_PLUGIN.md) in the ReDraft repo.
+For detailed instructions (Docker, reverse proxy, multi-user setups, troubleshooting), see [INSTALL_PLUGIN.md](INSTALL_PLUGIN.md).
+
+---
+
+## Stopping a Refinement
+
+If a refinement is taking too long or you changed your mind, click the ReDraft message button (or the floating popout trigger) while refinement is in progress to cancel it immediately.
 
 ---
 
 ## Troubleshooting
 
-**"I imported the preset but nothing changed."**
-Make sure the preset is actually selected in the dropdown (not just imported). Click it in the preset list to activate it.
+**"Nothing happens when I click the ReDraft button."**
+Make sure at least one rule is enabled (built-in or custom). ReDraft won't run if there are no active rules.
 
-**"I don't see any Custom Rules section in ReDraft."**
-Scroll down further in ReDraft's settings panel — it's below the built-in rules and the system prompt sections.
+**"The import button doesn't open a file picker."**
+Try clicking it again — sometimes the file picker opens behind the SillyTavern window. Make sure you're clicking the import icon (page with arrow pointing in), not the export icon (page with arrow pointing out).
 
-**"The import button doesn't do anything."**
-Try clicking it again — sometimes the file picker opens behind the SillyTavern window. Also make sure you're clicking the import icon next to "Custom Rules," not the export icon (which looks similar).
+**"Import says 'Invalid file: must contain a non-empty rules array.'"**
+The file you selected isn't a ReDraft rules file. Rules files are JSON with a specific format (a `rules` array). Make sure you're not importing a preset JSON, lorebook JSON, or some other file by mistake.
 
-**"I imported the rules but the file picker says 'invalid file.'"**
-Make sure you're importing the `Simulacra ReDraft Rules V4.json` file, not the preset JSON or the lorebook JSON. They're different files with different formats.
+**"Refinement keeps timing out."**
+Go to **Advanced** and increase the **Request timeout**. Thinking models and slower APIs may need 180 or 300 seconds.
 
 **"ReDraft says 'already has an original stored, skipping.'"**
-This is a known quirk with certain message states. Try sending a new message — it should work on fresh messages.
+This can happen with message states from before a recent update. Try sending a new message — it should work on fresh messages.
 
-**"My responses are really slow."**
-If ReDraft is enabled, it adds a second LLM call after each response (the refinement pass). This roughly doubles response time. You can use the "Separate LLM" option with a fast model to speed this up, or disable auto-refine and only use ReDraft manually (via the `/redraft` command or the message button) when you want to.
+**"My responses are really slow now."**
+ReDraft adds a second LLM call after each AI response. This roughly doubles response time when auto-refine is on. To speed things up:
+- Use the **Separate LLM** option with a fast, cheap model for refinement.
+- Turn off auto-refine and use ReDraft manually (message button or `/redraft` command) only when you want to.
 
-**"I want to update Simulacra to a newer version."**
-Just re-import the new preset JSON (Step 2) — it will replace the old one. For new ReDraft rules, re-import those too (Step 5) and click OK to replace when prompted. Check the changelog to see if the lorebook also needs updating.
+**"I see a 502 Bad Gateway error."**
+If you're using the Separate LLM through a reverse proxy, the proxy is probably timing out before the refinement finishes. Increase your proxy's read/send timeout to at least 60 seconds for `/api/` routes. See [INSTALL_PLUGIN.md](INSTALL_PLUGIN.md#reverse-proxy-nginx-caddy-etc) for details.
+
+**"How do I update ReDraft?"**
+Update through SillyTavern: **Extensions** panel → find ReDraft → click **Update**. If you're using the Separate LLM server plugin, it auto-updates on the next SillyTavern restart (after the first manual install).
