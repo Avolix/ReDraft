@@ -730,13 +730,13 @@ async function refineViaST(promptText, systemPrompt, { signal, model } = {}) {
 /**
  * Send refinement request via server plugin.
  */
-async function refineViaPlugin(promptText, systemPrompt, { signal, model } = {}) {
+async function refineViaPlugin(promptText, systemPrompt, { signal, model, timeout: timeoutOverride } = {}) {
     const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: promptText },
     ];
 
-    const timeout = getSettings().requestTimeoutSeconds ?? 120;
+    const timeout = timeoutOverride || getSettings().requestTimeoutSeconds ?? 120;
     const body = { messages, timeout };
     if (model) body.model = model;
     const result = await pluginRequest('/refine', 'POST', body, { signal });
@@ -2215,24 +2215,35 @@ function renderSwarmTab() {
     bindSwarmUI();
 }
 
+/** Cached model list from the last /models fetch, shared with swarm UI. */
+let _swarmModelCache = [];
+
 function buildCouncilModelOverridesHtml(settings) {
     const size = settings.swarmCouncilSize || 3;
     const overrides = settings.swarmCouncilModelOverrides || {};
-    let html = '';
+    const hasModels = _swarmModelCache.length > 0;
+
+    let html = `<button class="menu_button" id="redraft_swarm_fetch_models"><i class="fa-solid fa-arrows-rotate"></i> Fetch Models</button>`;
+
+    const agents = [];
     for (let i = 0; i < size; i++) {
-        const agentId = `council_${i}`;
-        const label = `Agent ${String.fromCharCode(65 + i)}`;
-        html += `
-            <div class="redraft-swarm-field">
-                <label>${label} model</label>
-                <input type="text" class="text_pole redraft-swarm-model-input" data-agent-id="${agentId}" value="${overrides[agentId] || ''}" placeholder="default" />
+        agents.push({ id: `council_${i}`, label: `Agent ${String.fromCharCode(65 + i)}` });
+    }
+    agents.push({ id: 'judge', label: 'Judge' });
+
+    for (const agent of agents) {
+        const currentVal = overrides[agent.id] || '';
+        html += `<div class="redraft-swarm-field">
+                <label>${agent.label} model</label>
+                <div class="redraft-swarm-model-combo" data-agent-id="${agent.id}">
+                    <select class="text_pole redraft-swarm-model-select" data-agent-id="${agent.id}" style="${hasModels ? '' : 'display:none'}">
+                        <option value="">default</option>
+                        ${_swarmModelCache.map(m => `<option value="${m.id}" ${m.id === currentVal ? 'selected' : ''}>${m.id}</option>`).join('')}
+                    </select>
+                    <input type="text" class="text_pole redraft-swarm-model-input" data-agent-id="${agent.id}" value="${currentVal}" placeholder="default" style="${hasModels ? 'display:none' : ''}" />
+                </div>
             </div>`;
     }
-    html += `
-        <div class="redraft-swarm-field">
-            <label>Judge model</label>
-            <input type="text" class="text_pole redraft-swarm-model-input" data-agent-id="judge" value="${overrides['judge'] || ''}" placeholder="default" />
-        </div>`;
     return html;
 }
 
@@ -2295,20 +2306,59 @@ function bindSwarmUI() {
 }
 
 function bindModelOverrideInputs() {
+    const saveOverride = (agentId, val) => {
+        const settings = getSettings();
+        if (!settings.swarmCouncilModelOverrides) settings.swarmCouncilModelOverrides = {};
+        if (val) {
+            settings.swarmCouncilModelOverrides[agentId] = val;
+        } else {
+            delete settings.swarmCouncilModelOverrides[agentId];
+        }
+        saveSettings();
+    };
+
     document.querySelectorAll('.redraft-swarm-model-input').forEach(input => {
-        input.addEventListener('change', (e) => {
-            const agentId = e.target.dataset.agentId;
-            const val = e.target.value.trim();
-            const settings = getSettings();
-            if (!settings.swarmCouncilModelOverrides) settings.swarmCouncilModelOverrides = {};
-            if (val) {
-                settings.swarmCouncilModelOverrides[agentId] = val;
-            } else {
-                delete settings.swarmCouncilModelOverrides[agentId];
-            }
-            saveSettings();
-        });
+        input.addEventListener('change', (e) => saveOverride(e.target.dataset.agentId, e.target.value.trim()));
     });
+
+    document.querySelectorAll('.redraft-swarm-model-select').forEach(select => {
+        select.addEventListener('change', (e) => saveOverride(e.target.dataset.agentId, e.target.value));
+    });
+
+    const fetchBtn = document.getElementById('redraft_swarm_fetch_models');
+    if (fetchBtn) {
+        fetchBtn.addEventListener('click', async () => {
+            fetchBtn.disabled = true;
+            fetchBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Fetching...';
+            try {
+                const data = await pluginRequest('/models');
+                const models = data?.models;
+                if (!Array.isArray(models) || models.length === 0) {
+                    toastr.info('No models returned by the API', 'ReDraft');
+                    return;
+                }
+                _swarmModelCache = models;
+                toastr.success(`${models.length} model(s) loaded`, 'ReDraft');
+
+                const overrides = getSettings().swarmCouncilModelOverrides || {};
+                document.querySelectorAll('.redraft-swarm-model-select').forEach(select => {
+                    const agentId = select.dataset.agentId;
+                    const currentVal = overrides[agentId] || '';
+                    select.innerHTML = '<option value="">default</option>'
+                        + models.map(m => `<option value="${m.id}" ${m.id === currentVal ? 'selected' : ''}>${m.id}</option>`).join('');
+                    select.style.display = '';
+                });
+                document.querySelectorAll('.redraft-swarm-model-input').forEach(input => {
+                    input.style.display = 'none';
+                });
+            } catch (err) {
+                toastr.error('Failed to fetch models: ' + err.message, 'ReDraft');
+            } finally {
+                fetchBtn.disabled = false;
+                fetchBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i> Fetch Models';
+            }
+        });
+    }
 }
 
 function initSwarmStageDragDrop() {
@@ -2384,17 +2434,25 @@ function updateSwarmProgress(progress) {
 
     if (titleEl) titleEl.textContent = `Swarm: ${progress.phase}`;
     if (fillEl) fillEl.style.width = `${Math.round((progress.current / progress.total) * 100)}%`;
-    if (textEl) textEl.textContent = `${progress.agentName} — ${progress.status}`;
+
+    const statusLabel = progress.status === 'failed' ? 'failed' : progress.status;
+    if (textEl) textEl.textContent = `${progress.agentName} — ${statusLabel}`;
 
     if (agentsEl) {
-        let agentEl = agentsEl.querySelector(`[data-agent="${progress.agentName}"]`);
+        let agentEl = agentsEl.querySelector(`[data-agent="${CSS.escape(progress.agentName)}"]`);
         if (!agentEl) {
             agentEl = document.createElement('div');
             agentEl.className = 'redraft-swarm-agent-status';
             agentEl.dataset.agent = progress.agentName;
             agentsEl.appendChild(agentEl);
         }
-        const icon = progress.status === 'done' ? 'fa-check' : progress.status === 'running' ? 'fa-spinner fa-spin' : 'fa-clock';
+        const iconMap = {
+            done: 'fa-check',
+            running: 'fa-spinner fa-spin',
+            failed: 'fa-xmark',
+            queued: 'fa-clock',
+        };
+        const icon = iconMap[progress.status] || 'fa-clock';
         agentEl.innerHTML = `<i class="fa-solid ${icon}"></i> <span>${progress.agentName}</span>`;
         agentEl.className = `redraft-swarm-agent-status redraft-swarm-status-${progress.status}`;
     }

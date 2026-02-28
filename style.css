@@ -1314,6 +1314,21 @@
     border-top: 1px solid var(--SmartThemeBorderColor);
 }
 
+.redraft-swarm-model-overrides > button {
+    margin-bottom: 10px;
+    width: 100%;
+}
+
+.redraft-swarm-model-combo {
+    flex: 1;
+    min-width: 0;
+}
+
+.redraft-swarm-model-combo select,
+.redraft-swarm-model-combo input {
+    width: 100%;
+}
+
 /* Swarm progress */
 
 .redraft-swarm-progress {
@@ -1371,6 +1386,17 @@
 .redraft-swarm-status-queued {
     color: var(--SmartThemeQuoteColor);
     opacity: 0.6;
+}
+
+.redraft-swarm-status-failed {
+    color: var(--SmartThemeQuoteColor);
+    text-decoration: line-through;
+    opacity: 0.7;
+}
+
+.redraft-swarm-status-failed i {
+    color: #f44336;
+    text-decoration: none;
 }
 
 .redraft-swarm-progress-bar {
