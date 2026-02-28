@@ -3,16 +3,16 @@
 /* ─── Sidebar Trigger Button ─────────────────────────────────────── */
 .redraft-sidebar-trigger {
     position: fixed;
-    bottom: calc(var(--bottomFormBlockSize) + 15px);
+    bottom: calc(var(--bottomFormBlockSize, 50px) + 15px);
     right: 15px;
-    z-index: 3999;
-    min-width: clamp(var(--bottomFormIconSize), 2.5vw, 48px);
-    height: clamp(var(--bottomFormIconSize), 2.5vw, 48px);
+    z-index: 31000;
+    min-width: clamp(var(--bottomFormIconSize, 24px), 2.5vw, 48px);
+    height: clamp(var(--bottomFormIconSize, 24px), 2.5vw, 48px);
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 3px;
-    font-size: clamp(calc(var(--mainFontSize) * 1.2), 1.4vw, 22px);
+    font-size: clamp(calc(var(--mainFontSize, 15px) * 1.2), 1.4vw, 22px);
     color: var(--SmartThemeBodyColor);
     opacity: 0.5;
     cursor: pointer;
@@ -52,7 +52,7 @@
     right: 0;
     height: 100vh;
     width: 380px;
-    z-index: 4000;
+    z-index: 31001;
     display: flex;
     flex-direction: column;
     border-left: 1px solid var(--SmartThemeBorderColor);
@@ -586,6 +586,19 @@
     .redraft-wb-stats-grid {
         grid-template-columns: 1fr;
     }
+
+    .redraft-sidebar-trigger {
+        min-width: 44px;
+        height: 44px;
+        font-size: 18px;
+        opacity: 0.85;
+        background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.4));
+        border-radius: 50%;
+        padding: 0;
+        right: 10px;
+        bottom: calc(var(--bottomFormBlockSize, 55px) + 10px);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
 }
 
 /* Spacing: checkbox between form groups (e.g. Protect font/color tags) */
@@ -917,7 +930,7 @@
 .redraft-diff-overlay {
     position: fixed;
     inset: 0;
-    z-index: 10000;
+    z-index: 31002;
     background: rgba(0, 0, 0, 0.6);
     display: flex;
     align-items: center;
