@@ -248,7 +248,7 @@ describe('stripProtectedBlocks', () => {
 
     it('protects font tags when option is set', () => {
         const text = '<font color="red">text</font>';
-        const { stripped: s1, blocks: b1 } = stripProtectedBlocks(text);
+        const { blocks: b1 } = stripProtectedBlocks(text);
         expect(b1).toHaveLength(0);
 
         const { stripped: s2, blocks: b2 } = stripProtectedBlocks(text, { protectFontTags: true });

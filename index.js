@@ -13,16 +13,12 @@ import {
     stripProtectedBlocks,
     restoreProtectedBlocks,
     parseChangelog,
-    detectPov,
-    tokenize,
-    lcsTable,
     computeWordDiff,
 } from './lib/text-utils.js';
 import {
     buildAiRefinePrompt as _buildAiRefinePrompt,
     buildUserEnhancePrompt as _buildUserEnhancePrompt,
-    POV_INSTRUCTIONS,
-    USER_POV_INSTRUCTIONS,
+    buildRefineContextBlock as _buildRefineContextBlock,
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_USER_ENHANCE_SYSTEM_PROMPT,
 } from './lib/prompt-builder.js';
@@ -30,11 +26,13 @@ import {
     resolveUserMessageIndex,
     categorizeRefinementError,
 } from './lib/message-utils.js';
+import { executeStrategy } from './lib/swarm/executor.js';
+import { resolveStrategyConfig, STRATEGY_TYPES, STRATEGY_META, DEFAULT_PIPELINE_STAGES, MIN_COUNCIL_SIZE, MAX_COUNCIL_SIZE } from './lib/swarm/strategies.js';
 
 const MODULE_NAME = 'redraft';
 const LOG_PREFIX = '[ReDraft]';
 /** Extension version (semver). Bump when releasing client/UI changes. */
-const EXTENSION_VERSION = '2.7.0';
+const EXTENSION_VERSION = '3.0.0';
 
 /**
  * Base URL path for the ReDraft server plugin API. Thin adapter over the
@@ -93,8 +91,21 @@ const defaultSettings = Object.freeze({
     reasoningContextMode: 'tags', // 'tags' (extract XML tags) or 'raw' (truncated pass-through)
     reasoningContextChars: 1000,
     reasoningContextRawFallback: true, // in 'tags' mode, fall back to raw if no tags found
-    popoutPosition: null, // { x, y } or null = default bottom-right
-    popoutSize: null,     // { width, height } or null = default
+    sidebarOpen: false,
+    sidebarActiveTab: 'refine', // 'refine' | 'history' | 'stats' | 'swarm'
+    sidebarWidth: 380,
+    bulkDelayMs: 2000,
+    swarmEnabled: false,
+    swarmStrategy: 'pipeline',  // 'pipeline' | 'council' | 'review'
+    swarmPipelineStages: [
+        { id: 'grammar', name: 'Grammar & Formatting', rules: ['grammar', 'formatting'], enabled: true },
+        { id: 'prose', name: 'Prose & Voice', rules: ['prose', 'voice', 'echo'], enabled: true },
+        { id: 'continuity', name: 'Continuity & Flow', rules: ['repetition', 'ending', 'lore'], enabled: true },
+    ],
+    swarmCouncilSize: 3,
+    swarmCouncilJudgeMode: 'synthesize', // 'pick_best' | 'synthesize'
+    swarmCouncilModelOverrides: {},      // { agentId: modelString } plugin mode only
+    swarmTimeoutSeconds: 180,            // per-agent timeout for swarm calls (longer than default to handle slower models)
 });
 
 // POV_INSTRUCTIONS imported from ./lib/prompt-builder.js
@@ -185,11 +196,10 @@ function getUserPersonaDescription() {
 // ─── State ──────────────────────────────────────────────────────────
 
 let isRefining = false; // Re-entrancy guard
+let isBulkRefining = false; // Bulk-refine guard (prevents single-refine during batch)
+let bulkCancelled = false; // Set to true to stop the bulk loop after current message
 let activeAbortController = null; // AbortController for the in-flight refinement request
 let pluginAvailable = false; // Whether server plugin is reachable
-let eventListenerRefs = {}; // For cleanup
-let _popoutOutsideClickRef = null; // Ref to the click-outside listener for cleanup
-
 function cancelRedraft() {
     if (activeAbortController) {
         activeAbortController.abort();
@@ -198,27 +208,76 @@ function cancelRedraft() {
 }
 
 /**
- * Hide the popout panel and clean up the click-outside listener.
- * All code paths that close the popout should call this.
+ * Close the sidebar panel and persist the closed state.
  */
-function hidePopout() {
-    const panel = document.getElementById('redraft_popout_panel');
-    if (panel) panel.style.display = 'none';
-    if (_popoutOutsideClickRef) {
-        document.removeEventListener('pointerdown', _popoutOutsideClickRef, true);
-        _popoutOutsideClickRef = null;
+function closeSidebar() {
+    const panel = document.getElementById('redraft_sidebar');
+    if (panel) panel.classList.remove('redraft-sidebar-open');
+    const settings = getSettings();
+    settings.sidebarOpen = false;
+    saveSettings();
+}
+
+/**
+ * Open the sidebar panel and persist the open state.
+ */
+function openSidebar() {
+    const panel = document.getElementById('redraft_sidebar');
+    if (!panel) return;
+    panel.classList.add('redraft-sidebar-open');
+    syncSidebarControls();
+    refreshActiveTab();
+    const settings = getSettings();
+    settings.sidebarOpen = true;
+    saveSettings();
+}
+
+function toggleSidebar() {
+    const panel = document.getElementById('redraft_sidebar');
+    if (!panel) return;
+    if (panel.classList.contains('redraft-sidebar-open')) {
+        closeSidebar();
+    } else {
+        openSidebar();
     }
+}
+
+/**
+ * Sync all sidebar quick-control values with current settings.
+ */
+function syncSidebarControls() {
+    const settings = getSettings();
+    const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+    const setChk = (id, val) => { const el = document.getElementById(id); if (el) el.checked = val; };
+
+    setChk('redraft_sb_auto', settings.autoRefine);
+    setVal('redraft_sb_pov', settings.pov || 'auto');
+    setChk('redraft_sb_user_auto', settings.userAutoEnhance);
+    setVal('redraft_sb_user_pov', settings.userPov || '1st');
+    setVal('redraft_sb_enhance_mode', settings.userEnhanceMode || 'post');
+
+    updateSidebarStatus();
+}
+
+/**
+ * Refresh whichever tab is currently active.
+ */
+function refreshActiveTab() {
+    const settings = getSettings();
+    const tab = settings.sidebarActiveTab || 'refine';
+    if (tab === 'refine') renderMessagePicker();
+    else if (tab === 'history') renderHistoryTab();
+    else if (tab === 'stats') renderStatsTab();
+    else if (tab === 'swarm') renderSwarmTab();
 }
 
 // Global keydown handler for ESC
 function onGlobalKeydown(e) {
     if (e.key !== 'Escape') return;
-    // Close diff popup first (higher z-index)
     const diffOverlay = document.getElementById('redraft_diff_overlay');
     if (diffOverlay) { closeDiffPopup(); return; }
-    // Then close popout
-    const popout = document.getElementById('redraft_popout_panel');
-    if (popout && popout.style.display !== 'none') { hidePopout(); }
+    const sidebar = document.getElementById('redraft_sidebar');
+    if (sidebar && sidebar.classList.contains('redraft-sidebar-open')) { closeSidebar(); }
 }
 document.addEventListener('keydown', onGlobalKeydown);
 
@@ -241,6 +300,97 @@ function getSettings() {
 function saveSettings() {
     const { saveSettingsDebounced } = SillyTavern.getContext();
     saveSettingsDebounced();
+}
+
+// ─── Refinement History & Batch Metadata ─────────────────────────────
+
+/**
+ * Append an entry to the refinement history log stored in chatMetadata.
+ * @param {object} entry
+ * @param {number} entry.messageIndex
+ * @param {string} entry.messageType - 'ai' | 'user'
+ * @param {boolean} entry.success
+ * @param {number} [entry.durationMs]
+ * @param {object} [entry.wordDelta] - { deleted, inserted }
+ * @param {string|null} [entry.batchId]
+ */
+async function appendHistoryEntry(entry) {
+    const { chatMetadata, saveMetadata } = SillyTavern.getContext();
+    if (!chatMetadata['redraft_history']) {
+        chatMetadata['redraft_history'] = [];
+    }
+    const history = chatMetadata['redraft_history'];
+    const seq = history.filter(h => h.timestamp === Date.now()).length;
+    history.push({
+        id: `${Date.now()}-${seq}`,
+        messageIndex: entry.messageIndex,
+        messageType: entry.messageType,
+        timestamp: Date.now(),
+        batchId: entry.batchId ?? null,
+        success: entry.success,
+        durationMs: entry.durationMs ?? 0,
+        wordDelta: entry.wordDelta ?? { deleted: 0, inserted: 0 },
+    });
+    await saveMetadata();
+}
+
+/**
+ * Record a completed batch run in chatMetadata.
+ * @param {string} batchId
+ * @param {object} data
+ * @param {number} data.timestamp
+ * @param {number[]} data.indices - Message indices that were targeted
+ * @param {object} data.results - { success, failed, skipped }
+ */
+async function recordBatch(batchId, data) {
+    const { chatMetadata, saveMetadata } = SillyTavern.getContext();
+    if (!chatMetadata['redraft_batches']) {
+        chatMetadata['redraft_batches'] = {};
+    }
+    chatMetadata['redraft_batches'][batchId] = data;
+    await saveMetadata();
+}
+
+/**
+ * Get the refinement history for the current chat.
+ * @returns {Array}
+ */
+function getHistoryForChat() {
+    const { chatMetadata } = SillyTavern.getContext();
+    return chatMetadata['redraft_history'] || [];
+}
+
+/**
+ * Get all batch records for the current chat.
+ * @returns {Object}
+ */
+function getBatchesForChat() {
+    const { chatMetadata } = SillyTavern.getContext();
+    return chatMetadata['redraft_batches'] || {};
+}
+
+/**
+ * Undo all messages in a batch, calling undoRedraft for each that still has an original.
+ * @param {string} batchId
+ * @returns {Promise<number>} Number of messages actually undone
+ */
+async function undoBatch(batchId) {
+    const batches = getBatchesForChat();
+    const batch = batches[batchId];
+    if (!batch) return 0;
+
+    const { chatMetadata } = SillyTavern.getContext();
+    const originals = chatMetadata['redraft_originals'] || {};
+    let undoneCount = 0;
+
+    for (const idx of batch.indices) {
+        if (originals[idx] !== undefined) {
+            await undoRedraft(idx);
+            undoneCount++;
+        }
+    }
+
+    return undoneCount;
 }
 
 /**
@@ -357,9 +507,6 @@ async function pluginRequest(endpoint, method = 'GET', body = null, { signal } =
     } catch {
         const trimmed = (text || '').trim();
         if (trimmed.startsWith('<') || trimmed.toLowerCase().startsWith('<!doctype')) {
-            const fullUrl = typeof window !== 'undefined' && window.location
-                ? new URL(url, window.location.origin).href
-                : url;
             const isLocalhost = typeof window !== 'undefined' && window.location &&
                 /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(window.location.origin);
             let hint = '';
@@ -554,7 +701,7 @@ function updateEnhanceModeUI(mode) {
 /**
  * Send refinement request via ST's generateRaw().
  */
-async function refineViaST(promptText, systemPrompt, { signal } = {}) {
+async function refineViaST(promptText, systemPrompt, { signal, model: _model } = {}) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
     const { generateRaw } = SillyTavern.getContext();
@@ -576,14 +723,16 @@ async function refineViaST(promptText, systemPrompt, { signal } = {}) {
 /**
  * Send refinement request via server plugin.
  */
-async function refineViaPlugin(promptText, systemPrompt, { signal } = {}) {
+async function refineViaPlugin(promptText, systemPrompt, { signal, model, timeout: timeoutOverride } = {}) {
     const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: promptText },
     ];
 
-    const timeout = getSettings().requestTimeoutSeconds ?? 120;
-    const result = await pluginRequest('/refine', 'POST', { messages, timeout }, { signal });
+    const timeout = timeoutOverride || (getSettings().requestTimeoutSeconds ?? 120);
+    const body = { messages, timeout };
+    if (model) body.model = model;
+    const result = await pluginRequest('/refine', 'POST', body, { signal });
 
     if (!result.text || !result.text.trim()) {
         throw new Error('Plugin returned an empty response');
@@ -605,18 +754,220 @@ function buildUserEnhancePrompt(settings, context, chatArray, messageIndex, stri
     });
 }
 
+// ─── Core Refinement Pipeline ────────────────────────────────────────
+
+/**
+ * Core refinement pipeline shared by single-refine and bulk-refine.
+ * Handles: save original, strip blocks, build prompt, call LLM, parse changelog,
+ * restore blocks, update message, save chat, re-render, persist diff metadata,
+ * show undo/diff buttons.
+ *
+ * Does NOT manage: isRefining guard, toasts, abort controller lifecycle,
+ * sidebar/trigger loading state, or notification sound.
+ *
+ * @param {number} messageIndex Index in context.chat
+ * @param {object} [opts]
+ * @param {AbortSignal} [opts.signal] Abort signal for cancellation
+ * @param {object} [opts.overrides] Per-batch setting overrides
+ * @param {boolean} [opts.showDiff=true] Whether to auto-show the diff popup
+ * @returns {Promise<{durationMs: number, wordDelta: {deleted: number, inserted: number}}>}
+ */
+async function _refineMessageCore(messageIndex, { signal, overrides, showDiff = true } = {}) {
+    const context = SillyTavern.getContext();
+    const { chat, saveChat, chatMetadata, saveMetadata } = context;
+    const message = chat[messageIndex];
+    const settings = getSettings();
+    const refineStartTime = Date.now();
+
+    if (!chatMetadata['redraft_originals']) {
+        chatMetadata['redraft_originals'] = {};
+    }
+    chatMetadata['redraft_originals'][messageIndex] = message.mes;
+    await saveMetadata();
+
+    const { stripped: strippedMessage, blocks: protectedBlocks } = stripProtectedBlocks(message.mes, {
+        protectFontTags: settings.protectFontTags,
+    });
+
+    const isUserMessage = !!message.is_user;
+    let systemPrompt;
+    let promptText;
+
+    if (isUserMessage) {
+        const effectiveSettings = overrides
+            ? { ...settings, ..._applyUserOverrides(settings, overrides) }
+            : settings;
+        ({ systemPrompt, promptText } = buildUserEnhancePrompt(
+            effectiveSettings, context, chat, messageIndex, strippedMessage,
+        ));
+        console.debug(`${LOG_PREFIX} Enhancing user message ${messageIndex}`);
+    } else {
+        const reasoning = settings.reasoningContext ? (message.extra?.reasoning || '') : '';
+        ({ systemPrompt, promptText } = _buildAiRefinePrompt(
+            settings, context, chat, messageIndex, strippedMessage, {
+                rulesText: overrides?.rulesText ?? compileRules(settings),
+                systemPrompt: overrides?.systemPrompt ?? (settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT),
+                reasoning,
+            },
+        ));
+    }
+
+    const actionVerb = isUserMessage ? 'enhancement' : 'refinement';
+    console.debug(`${LOG_PREFIX} [prompt] System prompt (${systemPrompt.length} chars):`, systemPrompt.substring(0, 200) + '\u2026');
+    console.debug(`${LOG_PREFIX} [prompt] Full ${actionVerb} prompt (${promptText.length} chars):`);
+    console.debug(promptText);
+
+    let refinedText;
+    if (settings.connectionMode === 'plugin') {
+        refinedText = await refineViaPlugin(promptText, systemPrompt, { signal });
+    } else {
+        refinedText = await refineViaST(promptText, systemPrompt, { signal });
+    }
+
+    const { changelog, refined: cleanRefined } = parseChangelog(refinedText);
+    if (changelog) {
+        console.log(`${LOG_PREFIX} [changelog]`, changelog);
+    }
+
+    refinedText = restoreProtectedBlocks(cleanRefined, protectedBlocks);
+    const originalText = message.mes;
+    message.mes = refinedText;
+    await saveChat();
+
+    rerenderMessage(messageIndex);
+
+    if (!chatMetadata['redraft_diffs']) chatMetadata['redraft_diffs'] = {};
+    chatMetadata['redraft_diffs'][messageIndex] = { original: originalText, changelog: changelog || null };
+    await saveMetadata();
+
+    showUndoButton(messageIndex);
+    showDiffButton(messageIndex, originalText, refinedText, changelog);
+
+    if (showDiff && settings.showDiffAfterRefine) {
+        showDiffPopup(originalText, refinedText, changelog);
+    }
+
+    const durationMs = Date.now() - refineStartTime;
+    console.log(`${LOG_PREFIX} Message ${messageIndex} refined successfully (mode: ${settings.connectionMode}) in ${(durationMs / 1000).toFixed(1)}s`);
+
+    const countWords = (text) => text.trim().split(/\s+/).filter(Boolean).length;
+    const oldWords = countWords(originalText);
+    const newWords = countWords(refinedText);
+
+    return {
+        durationMs,
+        wordDelta: { deleted: Math.max(0, oldWords - newWords), inserted: Math.max(0, newWords - oldWords) },
+    };
+}
+
+/**
+ * Refine a message using swarm multi-agent strategies.
+ * Mirrors _refineMessageCore pattern: save original, strip blocks, call swarm,
+ * restore blocks, update message, save, re-render, persist metadata.
+ */
+async function _refineMessageSwarm(messageIndex, { signal, overrides, showDiff = true } = {}) {
+    const context = SillyTavern.getContext();
+    const { chat, saveChat, chatMetadata, saveMetadata } = context;
+    const message = chat[messageIndex];
+    const settings = getSettings();
+    const refineStartTime = Date.now();
+
+    if (!chatMetadata['redraft_originals']) {
+        chatMetadata['redraft_originals'] = {};
+    }
+    chatMetadata['redraft_originals'][messageIndex] = message.mes;
+    await saveMetadata();
+
+    const { stripped: strippedMessage, blocks: protectedBlocks } = stripProtectedBlocks(message.mes, {
+        protectFontTags: settings.protectFontTags,
+    });
+
+    const strategyConfig = resolveStrategyConfig(settings);
+
+    const reasoning = settings.reasoningContext ? (message.extra?.reasoning || '') : '';
+    const contextBlock = _buildRefineContextBlock(settings, context, chat, messageIndex, strippedMessage, { reasoning });
+
+    const fullRulesText = overrides?.rulesText ?? compileRules(settings);
+    const refineFn = settings.connectionMode === 'plugin' ? refineViaPlugin : refineViaST;
+
+    console.log(`${LOG_PREFIX} [swarm] Starting ${strategyConfig.type} strategy for message ${messageIndex}`);
+
+    const { refinedRaw, agentLog } = await executeStrategy({
+        strategyConfig,
+        messageText: strippedMessage,
+        contextBlock,
+        fullRulesText,
+        allBuiltInRules: BUILTIN_RULES,
+        settings,
+        refineFn,
+        signal,
+        timeoutSeconds: settings.swarmTimeoutSeconds || 180,
+        onProgress: (progress) => {
+            console.debug(`${LOG_PREFIX} [swarm] ${progress.phase}: ${progress.agentName} [${progress.status}] (${progress.current}/${progress.total})`);
+            updateSwarmProgress(progress);
+        },
+    });
+
+    const { changelog, refined: cleanRefined } = parseChangelog(refinedRaw);
+    if (changelog) {
+        console.log(`${LOG_PREFIX} [swarm] [changelog]`, changelog);
+    }
+
+    const refinedText = restoreProtectedBlocks(cleanRefined, protectedBlocks);
+    const originalText = message.mes;
+    message.mes = refinedText;
+    await saveChat();
+
+    rerenderMessage(messageIndex);
+
+    if (!chatMetadata['redraft_diffs']) chatMetadata['redraft_diffs'] = {};
+    chatMetadata['redraft_diffs'][messageIndex] = { original: originalText, changelog: changelog || null };
+    await saveMetadata();
+
+    showUndoButton(messageIndex);
+    showDiffButton(messageIndex, originalText, refinedText, changelog);
+
+    if (showDiff && settings.showDiffAfterRefine) {
+        showDiffPopup(originalText, refinedText, changelog);
+    }
+
+    const durationMs = Date.now() - refineStartTime;
+    const totalAgentTime = agentLog.reduce((sum, a) => sum + a.durationMs, 0);
+    console.log(`${LOG_PREFIX} [swarm] ${strategyConfig.type} complete: ${agentLog.length} agents, ${(totalAgentTime / 1000).toFixed(1)}s agent time, ${(durationMs / 1000).toFixed(1)}s wall time`);
+
+    const countWords = (text) => text.trim().split(/\s+/).filter(Boolean).length;
+    const oldWords = countWords(originalText);
+    const newWords = countWords(refinedText);
+
+    return {
+        durationMs,
+        wordDelta: { deleted: Math.max(0, oldWords - newWords), inserted: Math.max(0, newWords - oldWords) },
+        agentLog,
+    };
+}
+
+/**
+ * Apply user-message overrides to settings for buildUserEnhancePrompt.
+ */
+function _applyUserOverrides(_settings, overrides) {
+    const patch = {};
+    if (overrides.userPov) patch.userPov = overrides.userPov;
+    if (overrides.userSystemPrompt) patch.userSystemPrompt = overrides.userSystemPrompt;
+    return patch;
+}
+
 /**
  * Refine a message at the given index.
  * @param {number} messageIndex Index in context.chat
  */
 async function redraftMessage(messageIndex) {
-    if (isRefining) {
-        cancelRedraft();
+    if (isRefining || isBulkRefining) {
+        if (isRefining) cancelRedraft();
         return;
     }
 
     const context = SillyTavern.getContext();
-    const { chat, saveChat, chatMetadata, saveMetadata } = context;
+    const { chat } = context;
 
     if (!chat || messageIndex < 0 || messageIndex >= chat.length) {
         toastr.error('Invalid message index', 'ReDraft');
@@ -632,7 +983,6 @@ async function redraftMessage(messageIndex) {
     const settings = getSettings();
     let refineSucceeded = false;
 
-    // Check if plugin mode is selected but plugin is unavailable
     if (settings.connectionMode === 'plugin' && !pluginAvailable) {
         toastr.error(
             'ReDraft server plugin is not available. Install it once (see Install server plugin in ReDraft settings), then restart SillyTavern.',
@@ -642,102 +992,41 @@ async function redraftMessage(messageIndex) {
         return;
     }
 
-    // Set re-entrancy guard, create abort controller, and start timer
     isRefining = true;
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
-    const refineStartTime = Date.now();
-    setPopoutTriggerLoading(true);
+    setSidebarTriggerLoading(true);
 
-    // Clean up stale undo/diff buttons from prior refinement of this message
-    // (fixes compare showing wrong diff after swiping in auto mode)
     hideUndoButton(messageIndex);
     hideDiffButton(messageIndex);
 
-    // Show loading state on the message button + toast
     const isUserMessage = !!message.is_user;
     setMessageButtonLoading(messageIndex, true);
     toastr.info(isUserMessage ? 'Enhancing message\u2026' : 'Refining message\u2026', 'ReDraft');
 
+    const useSwarm = settings.swarmEnabled && !isUserMessage;
+
     try {
-        // Save original to chatMetadata for undo
-        if (!chatMetadata['redraft_originals']) {
-            chatMetadata['redraft_originals'] = {};
-        }
-        chatMetadata['redraft_originals'][messageIndex] = message.mes;
-        await saveMetadata();
+        const result = useSwarm
+            ? await _refineMessageSwarm(messageIndex, { signal })
+            : await _refineMessageCore(messageIndex, { signal });
 
-        // Strip structured content (code fences, HTML, bracket blocks, optionally font tags) before sending to LLM
-        const { stripped: strippedMessage, blocks: protectedBlocks } = stripProtectedBlocks(message.mes, {
-            protectFontTags: settings.protectFontTags,
-        });
-
-        let systemPrompt;
-        let promptText;
-
-        if (isUserMessage) {
-            // ── User message enhancement ──
-            ({ systemPrompt, promptText } = buildUserEnhancePrompt(settings, context, chat, messageIndex, strippedMessage));
-            console.debug(`${LOG_PREFIX} Enhancing user message ${messageIndex}`);
-        } else {
-            // ── AI message refinement ──
-            const reasoning = settings.reasoningContext ? (message.extra?.reasoning || '') : '';
-            ({ systemPrompt, promptText } = _buildAiRefinePrompt(settings, context, chat, messageIndex, strippedMessage, {
-                rulesText: compileRules(settings),
-                systemPrompt: settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT,
-                reasoning,
-            }));
-        }
-
-        const actionVerb = isUserMessage ? 'enhancement' : 'refinement';
-        console.debug(`${LOG_PREFIX} [prompt] System prompt (${systemPrompt.length} chars):`, systemPrompt.substring(0, 200) + '\u2026');
-        console.debug(`${LOG_PREFIX} [prompt] Full ${actionVerb} prompt (${promptText.length} chars):`);
-        console.debug(promptText);
-
-        // Call refinement via the appropriate mode
-        let refinedText;
-        if (settings.connectionMode === 'plugin') {
-            refinedText = await refineViaPlugin(promptText, systemPrompt, { signal });
-        } else {
-            refinedText = await refineViaST(promptText, systemPrompt, { signal });
-        }
-
-        // Parse changelog from response
-        const { changelog, refined: cleanRefined } = parseChangelog(refinedText);
-        if (changelog) {
-            console.log(`${LOG_PREFIX} [changelog]`, changelog);
-        }
-
-        // Restore protected blocks and write refined text back
-        refinedText = restoreProtectedBlocks(cleanRefined, protectedBlocks);
-        const originalText = message.mes;
-        message.mes = refinedText;
-        await saveChat();
-
-        // Re-render the message in the UI
-        rerenderMessage(messageIndex);
-
-        // Persist diff data so diff button can be restored on reload
-        if (!chatMetadata['redraft_diffs']) chatMetadata['redraft_diffs'] = {};
-        chatMetadata['redraft_diffs'][messageIndex] = { original: originalText, changelog: changelog || null };
-        await saveMetadata();
-
-        // Show undo + diff buttons
-        showUndoButton(messageIndex);
-        showDiffButton(messageIndex, originalText, refinedText, changelog);
-
-        // Auto-show diff popup if toggle is on
-        if (settings.showDiffAfterRefine) {
-            showDiffPopup(originalText, refinedText, changelog);
-        }
-
-        toastr.success(isUserMessage ? 'Message enhanced' : 'Message refined', 'ReDraft');
+        toastr.success(
+            isUserMessage ? 'Message enhanced' : (useSwarm ? `Message refined (${settings.swarmStrategy})` : 'Message refined'),
+            'ReDraft',
+        );
         playNotificationSound();
         refineSucceeded = true;
-        const refineMs = Date.now() - refineStartTime;
-        setPopoutTriggerLoading(false, refineMs);
-        console.log(`${LOG_PREFIX} Message ${messageIndex} refined successfully (mode: ${settings.connectionMode}) in ${(refineMs / 1000).toFixed(1)}s`);
+        setSidebarTriggerLoading(false, result.durationMs);
 
+        appendHistoryEntry({
+            messageIndex,
+            messageType: isUserMessage ? 'user' : 'ai',
+            success: true,
+            durationMs: result.durationMs,
+            wordDelta: result.wordDelta,
+            swarmStrategy: useSwarm ? settings.swarmStrategy : undefined,
+        });
     } catch (err) {
         if (err.name === 'AbortError') {
             toastr.info('Drafting stopped', 'ReDraft');
@@ -750,9 +1039,9 @@ async function redraftMessage(messageIndex) {
         isRefining = false;
         activeAbortController = null;
         setMessageButtonLoading(messageIndex, false);
-        // Only clear loading here on failure; success path already called setPopoutTriggerLoading(false, refineMs)
+        clearSwarmProgress();
         if (!refineSucceeded) {
-            setPopoutTriggerLoading(false);
+            setSidebarTriggerLoading(false);
         }
     }
 }
@@ -763,8 +1052,8 @@ async function redraftMessage(messageIndex) {
  * review and edit before sending.
  */
 async function enhanceTextarea() {
-    if (isRefining) {
-        cancelRedraft();
+    if (isRefining || isBulkRefining) {
+        if (isRefining) cancelRedraft();
         return;
     }
 
@@ -800,7 +1089,7 @@ async function enhanceTextarea() {
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
     const refineStartTime = Date.now();
-    setPopoutTriggerLoading(true);
+    setSidebarTriggerLoading(true);
     setTextareaEnhanceButtonLoading(true);
     toastr.info('Enhancing message\u2026', 'ReDraft');
 
@@ -839,7 +1128,7 @@ async function enhanceTextarea() {
         const refineMs = Date.now() - refineStartTime;
         toastr.success('Message enhanced \u2014 review and send when ready', 'ReDraft');
         playNotificationSound();
-        setPopoutTriggerLoading(false, refineMs);
+        setSidebarTriggerLoading(false, refineMs);
         console.log(`${LOG_PREFIX} [inplace] Textarea enhanced in ${(refineMs / 1000).toFixed(1)}s`);
 
         if (settings.showDiffAfterRefine) {
@@ -856,7 +1145,7 @@ async function enhanceTextarea() {
     } finally {
         isRefining = false;
         activeAbortController = null;
-        setPopoutTriggerLoading(false);
+        setSidebarTriggerLoading(false);
         setTextareaEnhanceButtonLoading(false);
     }
 }
@@ -895,9 +1184,9 @@ function updateTextareaEnhanceButton(mode) {
         btn.style.display = shouldShow ? '' : 'none';
     }
 
-    const popoutTextareaBtn = document.getElementById('redraft_popout_enhance_textarea');
-    if (popoutTextareaBtn) {
-        popoutTextareaBtn.style.display = shouldShow ? '' : 'none';
+    const sidebarTextareaBtn = document.getElementById('redraft_sb_enhance_textarea');
+    if (sidebarTextareaBtn) {
+        sidebarTextareaBtn.style.display = shouldShow ? '' : 'none';
     }
 }
 
@@ -1026,8 +1315,8 @@ function setMessageButtonLoading(messageIndex, loading) {
 
 let _triggerDurationTimeout = null;
 
-function setPopoutTriggerLoading(loading, lastDurationMs) {
-    const trigger = document.getElementById('redraft_popout_trigger');
+function setSidebarTriggerLoading(loading, lastDurationMs) {
+    const trigger = document.getElementById('redraft_sidebar_trigger');
     if (!trigger) return;
     if (loading) {
         if (_triggerDurationTimeout) {
@@ -1045,24 +1334,24 @@ function setPopoutTriggerLoading(loading, lastDurationMs) {
             const durationText = sec >= 10 ? `${Math.round(sec)}s` : sec % 1 === 0 ? `${sec}s` : `${sec.toFixed(1)}s`;
             trigger.classList.add('redraft-show-duration');
             trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-trigger-duration">' + durationText + '</span><span class="redraft-auto-dot"></span>';
-            trigger.title = `ReDraft — last refine: ${durationText}`;
-            updatePopoutAutoState();
+            trigger.title = `ReDraft \u2014 last refine: ${durationText}`;
+            updateSidebarAutoState();
             if (_triggerDurationTimeout) clearTimeout(_triggerDurationTimeout);
             _triggerDurationTimeout = setTimeout(() => {
                 _triggerDurationTimeout = null;
-                const t = document.getElementById('redraft_popout_trigger');
+                const t = document.getElementById('redraft_sidebar_trigger');
                 if (t && !t.classList.contains('redraft-refining')) {
                     t.classList.remove('redraft-show-duration');
                     t.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-auto-dot"></span>';
                     t.title = 'ReDraft';
-                    updatePopoutAutoState();
+                    updateSidebarAutoState();
                 }
             }, 15000);
         } else {
             trigger.classList.remove('redraft-show-duration');
             trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-auto-dot"></span>';
             trigger.title = 'ReDraft';
-            updatePopoutAutoState();
+            updateSidebarAutoState();
         }
     }
 }
@@ -1215,246 +1504,95 @@ function closeDiffPopup() {
     if (overlay) overlay.remove();
 }
 
-// ─── Floating Popout ────────────────────────────────────────────────
+// ─── Sidebar ────────────────────────────────────────────────────────
 
-function createPopoutTrigger() {
-    if (document.getElementById('redraft_popout_trigger')) return;
+const SIDEBAR_MIN_WIDTH = 280;
+const SIDEBAR_MAX_WIDTH = 600;
+
+function createSidebarTrigger() {
+    if (document.getElementById('redraft_sidebar_trigger')) return;
 
     const trigger = document.createElement('div');
-    trigger.id = 'redraft_popout_trigger';
-    trigger.classList.add('redraft-popout-trigger');
+    trigger.id = 'redraft_sidebar_trigger';
+    trigger.classList.add('redraft-sidebar-trigger');
     trigger.title = 'ReDraft';
     trigger.setAttribute('role', 'button');
     trigger.setAttribute('tabindex', '0');
-    trigger.setAttribute('aria-label', 'Open ReDraft panel');
+    trigger.setAttribute('aria-label', 'Open ReDraft Workbench');
     trigger.innerHTML = `
         <i class="fa-solid fa-pen-nib"></i>
         <span class="redraft-auto-dot"></span>
     `;
-    trigger.addEventListener('click', togglePopout);
+    trigger.addEventListener('click', toggleSidebar);
     trigger.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            togglePopout();
+            toggleSidebar();
         }
     });
     document.body.appendChild(trigger);
 
-    updatePopoutAutoState();
+    updateSidebarAutoState();
 }
 
-function togglePopout() {
-    if (isRefining) {
-        cancelRedraft();
-        return;
-    }
-
-    const panel = document.getElementById('redraft_popout_panel');
-    if (!panel) return;
-    const isVisible = panel.style.display !== 'none';
-
-    if (isVisible) {
-        hidePopout();
-        return;
-    }
-
-    panel.style.display = 'flex';
-    applyPopoutPosition(panel);
-
-    const settings = getSettings();
-    const autoCheckbox = document.getElementById('redraft_popout_auto');
-    if (autoCheckbox) autoCheckbox.checked = settings.autoRefine;
-
-    const popoutPov = document.getElementById('redraft_popout_pov');
-    if (popoutPov) popoutPov.value = settings.pov || 'auto';
-
-    const userAutoCheckbox = document.getElementById('redraft_popout_user_auto_enhance');
-    if (userAutoCheckbox) userAutoCheckbox.checked = settings.userAutoEnhance;
-
-    const userPovSelect = document.getElementById('redraft_popout_user_pov');
-    if (userPovSelect) userPovSelect.value = settings.userPov || '1st';
-
-    const enhanceModeSelect = document.getElementById('redraft_popout_enhance_mode');
-    if (enhanceModeSelect) enhanceModeSelect.value = settings.userEnhanceMode || 'post';
-
-    updatePopoutStatus();
-
-    _popoutOutsideClickRef = (e) => {
-        if (!panel.contains(e.target) && !e.target.closest('.redraft-popout-trigger')) {
-            hidePopout();
-        }
-    };
-    requestAnimationFrame(() => {
-        document.addEventListener('pointerdown', _popoutOutsideClickRef, true);
-    });
-}
-
-const POPOUT_SNAP_THRESHOLD = 20;
-const POPOUT_SNAP_MARGIN = 10;
-const POPOUT_MIN_WIDTH = 220;
-const POPOUT_MAX_WIDTH = 500;
-const POPOUT_MIN_HEIGHT = 200;
-
-function applyPopoutPosition(panel) {
-    const settings = getSettings();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-
-    if (settings.popoutSize) {
-        panel.style.width = Math.min(Math.max(settings.popoutSize.width, POPOUT_MIN_WIDTH), POPOUT_MAX_WIDTH) + 'px';
-        if (settings.popoutSize.height) {
-            panel.style.height = Math.max(settings.popoutSize.height, POPOUT_MIN_HEIGHT) + 'px';
-        }
-    }
-
-    const rect = panel.getBoundingClientRect();
-    let x, y;
-
-    if (settings.popoutPosition) {
-        x = settings.popoutPosition.x;
-        y = settings.popoutPosition.y;
-    } else {
-        x = vw - rect.width - 15;
-        const bottomOffset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--bottomFormBlockSize')) || 0;
-        const iconOffset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--bottomFormIconSize')) || 0;
-        y = vh - rect.height - bottomOffset - iconOffset - 25;
-    }
-
-    x = Math.max(0, Math.min(x, vw - rect.width));
-    y = Math.max(0, Math.min(y, vh - rect.height));
-
-    panel.style.left = x + 'px';
-    panel.style.top = y + 'px';
-}
-
-function clampPanelOnScreen(panel) {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const rect = panel.getBoundingClientRect();
-    let x = rect.left;
-    let y = rect.top;
-    x = Math.max(0, Math.min(x, vw - rect.width));
-    y = Math.max(0, Math.min(y, vh - rect.height));
-    panel.style.left = x + 'px';
-    panel.style.top = y + 'px';
-}
-
-function snapToEdge(x, y, w, h) {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-
-    if (x < POPOUT_SNAP_THRESHOLD) x = POPOUT_SNAP_MARGIN;
-    else if (x + w > vw - POPOUT_SNAP_THRESHOLD) x = vw - w - POPOUT_SNAP_MARGIN;
-
-    if (y < POPOUT_SNAP_THRESHOLD) y = POPOUT_SNAP_MARGIN;
-    else if (y + h > vh - POPOUT_SNAP_THRESHOLD) y = vh - h - POPOUT_SNAP_MARGIN;
-
-    return { x, y };
-}
-
-function initPopoutDrag() {
-    const handle = document.getElementById('redraft_popout_drag_handle');
-    const panel = document.getElementById('redraft_popout_panel');
+function initSidebarResize() {
+    const handle = document.getElementById('redraft_sidebar_resize');
+    const panel = document.getElementById('redraft_sidebar');
     if (!handle || !panel) return;
 
-    let startX, startY, startLeft, startTop, dragging = false;
+    let startX, startW, resizing = false;
 
     handle.addEventListener('pointerdown', (e) => {
-        if (e.target.closest('.dragClose')) return;
         e.preventDefault();
-        dragging = true;
-        panel.classList.add('redraft-dragging');
+        resizing = true;
+        panel.classList.add('redraft-sidebar-resizing');
         startX = e.clientX;
-        startY = e.clientY;
-        const rect = panel.getBoundingClientRect();
-        startLeft = rect.left;
-        startTop = rect.top;
+        startW = panel.getBoundingClientRect().width;
         handle.setPointerCapture(e.pointerId);
     });
 
     handle.addEventListener('pointermove', (e) => {
-        if (!dragging) return;
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
-        panel.style.left = (startLeft + dx) + 'px';
-        panel.style.top = (startTop + dy) + 'px';
-    });
-
-    handle.addEventListener('pointerup', (e) => {
-        if (!dragging) return;
-        dragging = false;
-        panel.classList.remove('redraft-dragging');
-
-        const rect = panel.getBoundingClientRect();
-        const snapped = snapToEdge(rect.left, rect.top, rect.width, rect.height);
-        panel.style.left = snapped.x + 'px';
-        panel.style.top = snapped.y + 'px';
-
-        const s = getSettings();
-        s.popoutPosition = { x: snapped.x, y: snapped.y };
-        saveSettings();
-    });
-}
-
-function initPopoutResize() {
-    const grip = document.getElementById('redraft_popout_resize_grip');
-    const panel = document.getElementById('redraft_popout_panel');
-    if (!grip || !panel) return;
-
-    let startX, startY, startW, startH, startLeft, resizing = false;
-
-    grip.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        resizing = true;
-        panel.classList.add('redraft-dragging');
-        startX = e.clientX;
-        startY = e.clientY;
-        const rect = panel.getBoundingClientRect();
-        startW = rect.width;
-        startH = rect.height;
-        startLeft = rect.left;
-        grip.setPointerCapture(e.pointerId);
-    });
-
-    grip.addEventListener('pointermove', (e) => {
         if (!resizing) return;
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
-
-        const newW = Math.min(Math.max(startW - dx, POPOUT_MIN_WIDTH), POPOUT_MAX_WIDTH);
-        const newH = Math.max(startH + dy, POPOUT_MIN_HEIGHT);
-
+        const dx = startX - e.clientX;
+        const newW = Math.min(Math.max(startW + dx, SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH);
         panel.style.width = newW + 'px';
-        panel.style.height = newH + 'px';
-        panel.style.left = (startLeft + (startW - newW)) + 'px';
     });
 
-    grip.addEventListener('pointerup', () => {
+    handle.addEventListener('pointerup', () => {
         if (!resizing) return;
         resizing = false;
-        panel.classList.remove('redraft-dragging');
-
-        const rect = panel.getBoundingClientRect();
-        clampPanelOnScreen(panel);
-
+        panel.classList.remove('redraft-sidebar-resizing');
         const s = getSettings();
-        s.popoutSize = { width: Math.round(rect.width), height: Math.round(rect.height) };
-        const clamped = panel.getBoundingClientRect();
-        s.popoutPosition = { x: clamped.left, y: clamped.top };
+        s.sidebarWidth = Math.round(panel.getBoundingClientRect().width);
         saveSettings();
     });
 }
 
-function updatePopoutAutoState() {
-    const trigger = document.getElementById('redraft_popout_trigger');
+function switchTab(tabName) {
+    const tabs = document.querySelectorAll('.redraft-sidebar-tab');
+    const contents = document.querySelectorAll('.redraft-sidebar-tab-content');
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+    contents.forEach(c => c.classList.toggle('active', c.dataset.tab === tabName));
+
+    const s = getSettings();
+    s.sidebarActiveTab = tabName;
+    saveSettings();
+
+    if (tabName === 'refine') renderMessagePicker();
+    else if (tabName === 'history') renderHistoryTab();
+    else if (tabName === 'stats') renderStatsTab();
+    else if (tabName === 'swarm') renderSwarmTab();
+}
+
+function updateSidebarAutoState() {
+    const trigger = document.getElementById('redraft_sidebar_trigger');
     if (!trigger) return;
     const settings = getSettings();
     trigger.classList.toggle('auto-active', settings.autoRefine && settings.enabled);
 }
 
-async function updatePopoutStatus() {
-    const el = document.getElementById('redraft_popout_status');
+async function updateSidebarStatus() {
+    const el = document.getElementById('redraft_sb_status');
     if (!el) return;
     const settings = getSettings();
 
@@ -1470,6 +1608,852 @@ async function updatePopoutStatus() {
             el.textContent = 'Plugin unavailable';
         }
     }
+}
+
+// ─── Workbench: Message Picker (Refine Tab) ────────────────────────
+
+let _pickerSelectedIndices = new Set();
+
+function renderMessagePicker() {
+    const container = document.getElementById('redraft_wb_messages');
+    if (!container) return;
+
+    const context = SillyTavern.getContext();
+    const chat = context.chat || [];
+    const originals = context.chatMetadata?.['redraft_originals'] || {};
+    const { DOMPurify } = SillyTavern.libs;
+
+    container.innerHTML = '';
+    _pickerSelectedIndices.clear();
+
+    chat.forEach((msg, idx) => {
+        if (!msg || !msg.mes) return;
+        const isUser = !!msg.is_user;
+        const isSystem = !!msg.is_system;
+        if (isSystem) return;
+
+        const hasOriginal = originals[idx] !== undefined;
+        const preview = (msg.mes || '').replace(/[*_`#~<>[\]]/g, '').substring(0, 80).trim() || '(empty)';
+
+        const row = document.createElement('label');
+        row.classList.add('redraft-wb-message-row');
+        row.dataset.idx = idx;
+        row.dataset.type = isUser ? 'user' : 'ai';
+        row.dataset.refined = hasOriginal ? 'yes' : 'no';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.dataset.idx = idx;
+        if (idx === 0) checkbox.disabled = true;
+
+        checkbox.addEventListener('change', () => {
+            if (checkbox.checked) _pickerSelectedIndices.add(idx);
+            else _pickerSelectedIndices.delete(idx);
+            updatePickerCount();
+        });
+
+        const icon = document.createElement('i');
+        icon.classList.add('fa-solid', isUser ? 'fa-user' : 'fa-pen-nib');
+
+        const label = document.createElement('span');
+        label.classList.add('redraft-wb-msg-label');
+        label.textContent = `#${idx}`;
+
+        const text = document.createElement('span');
+        text.classList.add('redraft-wb-msg-preview');
+        text.textContent = DOMPurify ? DOMPurify.sanitize(preview, { ALLOWED_TAGS: [] }) : preview;
+
+        const dot = document.createElement('span');
+        dot.classList.add('redraft-wb-refined-dot');
+        if (hasOriginal) dot.classList.add('active');
+        dot.title = hasOriginal ? 'Undo available' : '';
+
+        row.append(checkbox, icon, label, text, dot);
+        container.appendChild(row);
+    });
+
+    // Bind filter bar
+    document.querySelectorAll('.redraft-wb-filter').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.redraft-wb-filter').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            applyPickerFilter(btn.dataset.filter);
+        });
+    });
+
+    // Bind select/deselect
+    const selectAll = document.getElementById('redraft_wb_select_all');
+    if (selectAll) selectAll.onclick = () => {
+        container.querySelectorAll('.redraft-wb-message-row:not(.redraft-hidden) input[type="checkbox"]:not(:disabled)').forEach(cb => {
+            cb.checked = true;
+            _pickerSelectedIndices.add(parseInt(cb.dataset.idx, 10));
+        });
+        updatePickerCount();
+    };
+
+    const deselectAll = document.getElementById('redraft_wb_deselect');
+    if (deselectAll) deselectAll.onclick = () => {
+        container.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+        _pickerSelectedIndices.clear();
+        updatePickerCount();
+    };
+
+    // Bind delay slider
+    const delaySlider = document.getElementById('redraft_wb_delay');
+    const delayLabel = document.getElementById('redraft_wb_delay_label');
+    if (delaySlider) {
+        const settings = getSettings();
+        delaySlider.value = settings.bulkDelayMs || 2000;
+        if (delayLabel) delayLabel.textContent = (delaySlider.value / 1000) + 's';
+        delaySlider.addEventListener('input', () => {
+            if (delayLabel) delayLabel.textContent = (delaySlider.value / 1000) + 's';
+            const s = getSettings();
+            s.bulkDelayMs = parseInt(delaySlider.value, 10);
+            saveSettings();
+        });
+    }
+
+    // Bind start button
+    const startBtn = document.getElementById('redraft_wb_start');
+    if (startBtn) {
+        startBtn.onclick = () => {
+            if (_pickerSelectedIndices.size === 0) {
+                toastr.warning('Select at least one message', 'ReDraft');
+                return;
+            }
+            const overrides = collectBatchOverrides();
+            bulkRedraft([..._pickerSelectedIndices].sort((a, b) => a - b), overrides);
+        };
+    }
+
+    // Bind cancel button
+    const cancelBtn = document.getElementById('redraft_wb_cancel');
+    if (cancelBtn) {
+        cancelBtn.onclick = () => {
+            bulkCancelled = true;
+            if (activeAbortController) activeAbortController.abort();
+        };
+    }
+
+    updatePickerCount();
+}
+
+function applyPickerFilter(filter) {
+    const rows = document.querySelectorAll('.redraft-wb-message-row');
+    rows.forEach(row => {
+        let visible = true;
+        if (filter === 'ai' && row.dataset.type !== 'ai') visible = false;
+        if (filter === 'user' && row.dataset.type !== 'user') visible = false;
+        if (filter === 'unrefined' && row.dataset.refined === 'yes') visible = false;
+        row.classList.toggle('redraft-hidden', !visible);
+    });
+}
+
+function updatePickerCount() {
+    const countEl = document.getElementById('redraft_wb_count');
+    if (countEl) countEl.textContent = `${_pickerSelectedIndices.size} selected`;
+    const startBtn = document.getElementById('redraft_wb_start');
+    if (startBtn) {
+        const span = startBtn.querySelector('span');
+        if (span) span.textContent = `Start (${_pickerSelectedIndices.size})`;
+    }
+}
+
+/**
+ * Collect per-batch override values from the Refine tab overrides section.
+ * Returns an overrides object or null if overrides are not enabled.
+ */
+function collectBatchOverrides() {
+    const details = document.getElementById('redraft_wb_overrides');
+    if (!details || !details.open) return null;
+
+    const pov = document.getElementById('redraft_wb_override_pov')?.value || '';
+    const sysprompt = document.getElementById('redraft_wb_override_sysprompt')?.value?.trim() || '';
+
+    if (!pov && !sysprompt) return null;
+
+    const overrides = {};
+    if (pov) overrides.pov = pov;
+    if (sysprompt) overrides.systemPrompt = sysprompt;
+    return overrides;
+}
+
+// ─── Workbench: Bulk Processing ─────────────────────────────────────
+
+async function bulkRedraft(targetIndices, overrides = null) {
+    if (isBulkRefining || isRefining) return;
+
+    const settings = getSettings();
+    if (settings.connectionMode === 'plugin' && !pluginAvailable) {
+        toastr.error('Plugin unavailable', 'ReDraft');
+        return;
+    }
+
+    isBulkRefining = true;
+    bulkCancelled = false;
+    activeAbortController = new AbortController();
+    const { signal } = activeAbortController;
+    const batchId = `batch-${Date.now()}`;
+    const batchTimestamp = Date.now();
+
+    const progressEl = document.getElementById('redraft_wb_progress');
+    const summaryEl = document.getElementById('redraft_wb_summary');
+    const runControls = document.querySelector('.redraft-wb-run-controls');
+    const fillEl = document.getElementById('redraft_wb_progress_fill');
+    const textEl = document.getElementById('redraft_wb_progress_text');
+    const currentEl = document.getElementById('redraft_wb_progress_current');
+
+    if (progressEl) progressEl.style.display = '';
+    if (summaryEl) summaryEl.style.display = 'none';
+    if (runControls) runControls.style.display = 'none';
+
+    setSidebarTriggerLoading(true);
+
+    let successCount = 0;
+    let failedCount = 0;
+    const failedDetails = [];
+    const total = targetIndices.length;
+
+    for (let i = 0; i < total; i++) {
+        if (bulkCancelled) break;
+
+        const idx = targetIndices[i];
+        const context = SillyTavern.getContext();
+        const msg = context.chat[idx];
+        const isUserMsg = msg?.is_user;
+        const pct = ((i / total) * 100).toFixed(0);
+
+        if (fillEl) fillEl.style.width = pct + '%';
+        if (textEl) textEl.textContent = `${i} / ${total}`;
+        if (currentEl) currentEl.textContent = `#${idx} — ${isUserMsg ? 'enhancing' : 'refining'}...`;
+
+        const useSwarm = settings.swarmEnabled && !isUserMsg;
+        try {
+            const result = useSwarm
+                ? await _refineMessageSwarm(idx, { signal, overrides, showDiff: false })
+                : await _refineMessageCore(idx, { signal, overrides, showDiff: false });
+            successCount++;
+
+            await appendHistoryEntry({
+                messageIndex: idx,
+                messageType: isUserMsg ? 'user' : 'ai',
+                success: true,
+                durationMs: result.durationMs,
+                wordDelta: result.wordDelta,
+                batchId,
+                swarmStrategy: useSwarm ? settings.swarmStrategy : undefined,
+            });
+        } catch (err) {
+            if (err.name === 'AbortError') break;
+            failedCount++;
+            failedDetails.push({ idx, error: err.message });
+            console.error(`${LOG_PREFIX} [bulk] Message ${idx} failed:`, err.message);
+
+            await appendHistoryEntry({
+                messageIndex: idx,
+                messageType: isUserMsg ? 'user' : 'ai',
+                success: false,
+                batchId,
+            });
+        }
+
+        // Delay between messages
+        if (i < total - 1 && !bulkCancelled) {
+            const delay = settings.bulkDelayMs || 2000;
+            if (delay > 0) {
+                await new Promise(resolve => {
+                    const timer = setTimeout(resolve, delay);
+                    const onAbort = () => { clearTimeout(timer); resolve(); };
+                    signal.addEventListener('abort', onAbort, { once: true });
+                });
+            }
+        }
+    }
+
+    // Finalize
+    if (fillEl) fillEl.style.width = '100%';
+    if (textEl) textEl.textContent = `${successCount + failedCount} / ${total}`;
+    if (currentEl) currentEl.textContent = bulkCancelled ? 'Cancelled' : 'Done';
+
+    await recordBatch(batchId, {
+        timestamp: batchTimestamp,
+        indices: targetIndices,
+        results: { success: successCount, failed: failedCount, skipped: total - successCount - failedCount },
+    });
+
+    // Show summary
+    if (summaryEl) {
+        let html = `<div class="redraft-wb-summary-header">${successCount} refined, ${failedCount} failed`;
+        if (bulkCancelled) html += ' (cancelled)';
+        html += '</div>';
+
+        if (failedDetails.length > 0) {
+            html += '<details class="redraft-wb-summary-failures"><summary>Failed details</summary><ul>';
+            failedDetails.forEach(f => { html += `<li>#${f.idx}: ${f.error}</li>`; });
+            html += '</ul></details>';
+        }
+
+        html += `<div class="redraft-wb-summary-actions">`;
+        html += `<button class="menu_button" id="redraft_wb_undo_batch" data-batch="${batchId}"><i class="fa-solid fa-rotate-left"></i> Undo All</button>`;
+        html += `<button class="menu_button" id="redraft_wb_back_to_picker"><i class="fa-solid fa-arrow-left"></i> Back to Picker</button>`;
+        html += `</div>`;
+
+        summaryEl.innerHTML = html;
+        summaryEl.style.display = '';
+
+        const undoBtn = document.getElementById('redraft_wb_undo_batch');
+        if (undoBtn) {
+            undoBtn.addEventListener('click', async () => {
+                const count = await undoBatch(batchId);
+                toastr.success(`Undid ${count} message(s)`, 'ReDraft');
+                renderMessagePicker();
+            });
+        }
+
+        const backBtn = document.getElementById('redraft_wb_back_to_picker');
+        if (backBtn) {
+            backBtn.addEventListener('click', () => {
+                if (progressEl) progressEl.style.display = 'none';
+                if (summaryEl) summaryEl.style.display = 'none';
+                if (runControls) runControls.style.display = '';
+                renderMessagePicker();
+            });
+        }
+    }
+
+    if (progressEl) progressEl.style.display = 'none';
+    if (runControls) runControls.style.display = '';
+
+    isBulkRefining = false;
+    bulkCancelled = false;
+    activeAbortController = null;
+    setSidebarTriggerLoading(false);
+    playNotificationSound();
+}
+
+// ─── Workbench: History Tab ─────────────────────────────────────────
+
+function renderHistoryTab() {
+    const container = document.getElementById('redraft_wb_history');
+    if (!container) return;
+
+    const history = getHistoryForChat();
+    const batches = getBatchesForChat();
+    const context = SillyTavern.getContext();
+    const originals = context.chatMetadata?.['redraft_originals'] || {};
+    const diffs = context.chatMetadata?.['redraft_diffs'] || {};
+
+    container.innerHTML = '';
+
+    if (history.length === 0 && Object.keys(batches).length === 0) {
+        container.innerHTML = '<div class="redraft-wb-empty">No refinement history yet</div>';
+        return;
+    }
+
+    // Batch cards
+    const batchIds = Object.keys(batches).sort((a, b) => batches[b].timestamp - batches[a].timestamp);
+    batchIds.forEach(batchId => {
+        const batch = batches[batchId];
+        const card = document.createElement('div');
+        card.classList.add('redraft-wb-batch-card');
+        const time = new Date(batch.timestamp).toLocaleString();
+        const { success, failed } = batch.results;
+        card.innerHTML = `
+            <div class="redraft-wb-batch-header">
+                <i class="fa-solid fa-layer-group"></i>
+                <span>Batch \u2014 ${time}</span>
+            </div>
+            <div class="redraft-wb-batch-stats">${batch.indices.length} messages (${success} OK, ${failed} failed)</div>
+            <button class="menu_button redraft-wb-batch-undo" data-batch="${batchId}"><i class="fa-solid fa-rotate-left"></i> Undo Batch</button>
+        `;
+        card.querySelector('.redraft-wb-batch-undo').addEventListener('click', async () => {
+            const count = await undoBatch(batchId);
+            toastr.success(`Undid ${count} message(s)`, 'ReDraft');
+            renderHistoryTab();
+        });
+        container.appendChild(card);
+    });
+
+    // Individual entries (most recent first)
+    const sortedHistory = [...history].reverse();
+    sortedHistory.forEach(entry => {
+        const row = document.createElement('div');
+        row.classList.add('redraft-wb-history-entry');
+        if (!entry.success) row.classList.add('failed');
+
+        const ago = _timeAgo(entry.timestamp);
+        const typeIcon = entry.messageType === 'user' ? 'fa-user' : 'fa-pen-nib';
+        const statusIcon = entry.success ? 'fa-check' : 'fa-xmark';
+        const batchTag = entry.batchId ? '<span class="redraft-wb-badge">batch</span>' : '';
+        const hasUndo = originals[entry.messageIndex] !== undefined;
+        const hasDiff = diffs[entry.messageIndex] !== undefined;
+
+        row.innerHTML = `
+            <span class="redraft-wb-history-time">${ago}</span>
+            <i class="fa-solid ${typeIcon}"></i>
+            <span class="redraft-wb-history-idx">#${entry.messageIndex}</span>
+            ${batchTag}
+            <i class="fa-solid ${statusIcon} redraft-wb-history-status"></i>
+            <span class="redraft-wb-history-actions">
+                ${hasDiff ? '<button class="redraft-wb-btn-diff" title="View diff"><i class="fa-solid fa-code-compare"></i></button>' : ''}
+                ${hasUndo ? '<button class="redraft-wb-btn-undo" title="Undo"><i class="fa-solid fa-rotate-left"></i></button>' : ''}
+            </span>
+        `;
+
+        if (hasDiff) {
+            row.querySelector('.redraft-wb-btn-diff')?.addEventListener('click', () => {
+                const d = diffs[entry.messageIndex];
+                const chat = context.chat || [];
+                showDiffPopup(d.original, chat[entry.messageIndex]?.mes || '', d.changelog);
+            });
+        }
+
+        if (hasUndo) {
+            row.querySelector('.redraft-wb-btn-undo')?.addEventListener('click', async () => {
+                await undoRedraft(entry.messageIndex);
+                toastr.success(`Message #${entry.messageIndex} restored`, 'ReDraft');
+                renderHistoryTab();
+            });
+        }
+
+        container.appendChild(row);
+    });
+}
+
+function _timeAgo(ts) {
+    const diff = Date.now() - ts;
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60) return 'just now';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    return `${Math.floor(hr / 24)}d ago`;
+}
+
+// ─── Workbench: Stats Tab ───────────────────────────────────────────
+
+function renderStatsTab() {
+    const container = document.getElementById('redraft_wb_stats');
+    if (!container) return;
+
+    const context = SillyTavern.getContext();
+    const chat = context.chat || [];
+    const originals = context.chatMetadata?.['redraft_originals'] || {};
+    const history = getHistoryForChat();
+
+    const totalMessages = chat.filter(m => m && m.mes && !m.is_system).length;
+    const aiMessages = chat.filter(m => m && m.mes && !m.is_user && !m.is_system).length;
+    const userMessages = chat.filter(m => m && m.mes && m.is_user).length;
+
+    const refinedEntries = history.filter(h => h.success && h.messageType === 'ai');
+    const enhancedEntries = history.filter(h => h.success && h.messageType === 'user');
+
+    const totalDeleted = history.reduce((sum, h) => sum + (h.wordDelta?.deleted || 0), 0);
+    const totalInserted = history.reduce((sum, h) => sum + (h.wordDelta?.inserted || 0), 0);
+
+    const successfulEntries = history.filter(h => h.success && h.durationMs > 0);
+    const avgTime = successfulEntries.length > 0
+        ? (successfulEntries.reduce((s, h) => s + h.durationMs, 0) / successfulEntries.length / 1000).toFixed(1)
+        : '—';
+    const minTime = successfulEntries.length > 0
+        ? (Math.min(...successfulEntries.map(h => h.durationMs)) / 1000).toFixed(1)
+        : '—';
+    const maxTime = successfulEntries.length > 0
+        ? (Math.max(...successfulEntries.map(h => h.durationMs)) / 1000).toFixed(1)
+        : '—';
+
+    const undoCount = Object.keys(originals).length;
+
+    const pct = (num, den) => den > 0 ? `(${Math.round(num / den * 100)}%)` : '';
+
+    container.innerHTML = `
+        <div class="redraft-wb-stat-card">
+            <div class="redraft-wb-stat-value">${totalMessages}</div>
+            <div class="redraft-wb-stat-label">Total Messages</div>
+            <div class="redraft-wb-stat-sub">${aiMessages} AI \u00b7 ${userMessages} User</div>
+        </div>
+        <div class="redraft-wb-stat-card">
+            <div class="redraft-wb-stat-value">${refinedEntries.length}</div>
+            <div class="redraft-wb-stat-label">AI Refined ${pct(refinedEntries.length, aiMessages)}</div>
+        </div>
+        <div class="redraft-wb-stat-card">
+            <div class="redraft-wb-stat-value">${enhancedEntries.length}</div>
+            <div class="redraft-wb-stat-label">User Enhanced ${pct(enhancedEntries.length, userMessages)}</div>
+        </div>
+        <div class="redraft-wb-stat-card">
+            <div class="redraft-wb-stat-value redraft-wb-stat-delta">
+                <span class="redraft-diff-stat-del">\u2212${totalDeleted}</span>
+                <span class="redraft-diff-stat-ins">+${totalInserted}</span>
+            </div>
+            <div class="redraft-wb-stat-label">Word Delta</div>
+        </div>
+        <div class="redraft-wb-stat-card">
+            <div class="redraft-wb-stat-value">${avgTime}s</div>
+            <div class="redraft-wb-stat-label">Avg Refine Time</div>
+            <div class="redraft-wb-stat-sub">min ${minTime}s \u00b7 max ${maxTime}s</div>
+        </div>
+        <div class="redraft-wb-stat-card">
+            <div class="redraft-wb-stat-value">${undoCount}</div>
+            <div class="redraft-wb-stat-label">Undo Available</div>
+        </div>
+    `;
+}
+
+// ─── Workbench: Swarm Tab ───────────────────────────────────────────
+
+function renderSwarmTab() {
+    const container = document.getElementById('redraft_wb_swarm');
+    if (!container) return;
+
+    const settings = getSettings();
+    const isPlugin = settings.connectionMode === 'plugin';
+
+    const stages = settings.swarmPipelineStages || DEFAULT_PIPELINE_STAGES;
+
+    container.innerHTML = `
+        <div class="redraft-swarm-toggle">
+            <label class="checkbox_label">
+                <input type="checkbox" id="redraft_swarm_enabled" ${settings.swarmEnabled ? 'checked' : ''} />
+                <span>Enable Swarm Mode</span>
+            </label>
+            <small class="redraft-swarm-hint">Multi-agent refinement for AI messages. User messages always use single-pass.</small>
+        </div>
+
+        <div class="redraft-swarm-config" id="redraft_swarm_config" style="${settings.swarmEnabled ? '' : 'display:none'}">
+            <div class="redraft-swarm-strategy-select">
+                <label>Strategy</label>
+                <select id="redraft_swarm_strategy" class="text_pole">
+                    ${Object.entries(STRATEGY_META).map(([key, meta]) =>
+                        `<option value="${key}" ${settings.swarmStrategy === key ? 'selected' : ''}>${meta.icon} ${meta.name}</option>`
+                    ).join('')}
+                </select>
+                <small class="redraft-swarm-strategy-desc" id="redraft_swarm_strategy_desc">
+                    ${STRATEGY_META[settings.swarmStrategy]?.description || ''}
+                </small>
+            </div>
+
+            <div class="redraft-swarm-panel" id="redraft_swarm_panel_pipeline" style="${settings.swarmStrategy === 'pipeline' ? '' : 'display:none'}">
+                <h4>Pipeline Stages</h4>
+                <div class="redraft-swarm-stages" id="redraft_swarm_stages">
+                    ${stages.map((stage, i) => `
+                        <div class="redraft-swarm-stage" data-stage-index="${i}">
+                            <span class="redraft-swarm-stage-drag" title="Drag to reorder"><i class="fa-solid fa-grip-vertical"></i></span>
+                            <label class="checkbox_label">
+                                <input type="checkbox" class="redraft-swarm-stage-toggle" data-stage-index="${i}" ${stage.enabled ? 'checked' : ''} />
+                                <span>${stage.name}</span>
+                            </label>
+                            <small class="redraft-swarm-stage-rules">${stage.rules.join(', ')}</small>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+
+            <div class="redraft-swarm-panel" id="redraft_swarm_panel_council" style="${settings.swarmStrategy === 'council' ? '' : 'display:none'}">
+                <h4>Council Configuration</h4>
+                <div class="redraft-swarm-field">
+                    <label>Council Members</label>
+                    <input type="number" id="redraft_swarm_council_size" class="text_pole" min="${MIN_COUNCIL_SIZE}" max="${MAX_COUNCIL_SIZE}" value="${settings.swarmCouncilSize}" />
+                </div>
+                <div class="redraft-swarm-field">
+                    <label>Judge Mode</label>
+                    <select id="redraft_swarm_judge_mode" class="text_pole">
+                        <option value="synthesize" ${settings.swarmCouncilJudgeMode === 'synthesize' ? 'selected' : ''}>Synthesize best edits</option>
+                        <option value="pick_best" ${settings.swarmCouncilJudgeMode === 'pick_best' ? 'selected' : ''}>Pick single best</option>
+                    </select>
+                </div>
+                ${isPlugin ? `
+                <div class="redraft-swarm-model-overrides" id="redraft_swarm_model_overrides">
+                    <h5>Per-Agent Model Override <small>(plugin mode)</small></h5>
+                    ${buildCouncilModelOverridesHtml(settings)}
+                </div>` : `
+                <small class="redraft-swarm-hint">Per-agent model overrides available in plugin mode only.</small>
+                `}
+            </div>
+
+            <div class="redraft-swarm-panel" id="redraft_swarm_panel_review" style="${settings.swarmStrategy === 'review' ? '' : 'display:none'}">
+                <h4>Review + Refine</h4>
+                <p class="redraft-swarm-hint">A reviewer analyzes the message and produces a structured critique. A refiner then applies the critique. No additional configuration needed.</p>
+            </div>
+
+            <div class="redraft-swarm-timeout">
+                <div class="redraft-swarm-field">
+                    <label>Per-agent timeout</label>
+                    <input type="number" id="redraft_swarm_timeout" class="text_pole" min="30" max="600" value="${settings.swarmTimeoutSeconds || 180}" /> <span class="redraft-swarm-hint">seconds</span>
+                </div>
+                <small class="redraft-swarm-hint">Higher than normal timeout since swarm sends multiple requests. Increase if slower models time out.</small>
+            </div>
+        </div>
+
+        <div class="redraft-swarm-progress" id="redraft_swarm_progress" style="display:none">
+            <h4 id="redraft_swarm_progress_title">Swarm</h4>
+            <div class="redraft-swarm-agents" id="redraft_swarm_agents"></div>
+            <div class="redraft-swarm-progress-bar">
+                <div class="redraft-swarm-progress-fill" id="redraft_swarm_progress_fill"></div>
+            </div>
+            <div class="redraft-swarm-progress-text" id="redraft_swarm_progress_text"></div>
+        </div>
+    `;
+
+    bindSwarmUI();
+}
+
+/** Cached model list from the last /models fetch, shared with swarm UI. */
+let _swarmModelCache = [];
+
+function buildCouncilModelOverridesHtml(settings) {
+    const size = settings.swarmCouncilSize || 3;
+    const overrides = settings.swarmCouncilModelOverrides || {};
+    const hasModels = _swarmModelCache.length > 0;
+
+    let html = `<button class="menu_button" id="redraft_swarm_fetch_models"><i class="fa-solid fa-arrows-rotate"></i> Fetch Models</button>`;
+
+    const agents = [];
+    for (let i = 0; i < size; i++) {
+        agents.push({ id: `council_${i}`, label: `Agent ${String.fromCharCode(65 + i)}` });
+    }
+    agents.push({ id: 'judge', label: 'Judge' });
+
+    for (const agent of agents) {
+        const currentVal = overrides[agent.id] || '';
+        html += `<div class="redraft-swarm-field">
+                <label>${agent.label} model</label>
+                <div class="redraft-swarm-model-combo" data-agent-id="${agent.id}">
+                    <select class="text_pole redraft-swarm-model-select" data-agent-id="${agent.id}" style="${hasModels ? '' : 'display:none'}">
+                        <option value="">default</option>
+                        ${_swarmModelCache.map(m => `<option value="${m.id}" ${m.id === currentVal ? 'selected' : ''}>${m.id}</option>`).join('')}
+                    </select>
+                    <input type="text" class="text_pole redraft-swarm-model-input" data-agent-id="${agent.id}" value="${currentVal}" placeholder="default" style="${hasModels ? 'display:none' : ''}" />
+                </div>
+            </div>`;
+    }
+    return html;
+}
+
+function bindSwarmUI() {
+    const enableToggle = document.getElementById('redraft_swarm_enabled');
+    const configContainer = document.getElementById('redraft_swarm_config');
+    const strategySelect = document.getElementById('redraft_swarm_strategy');
+    const strategyDesc = document.getElementById('redraft_swarm_strategy_desc');
+
+    enableToggle?.addEventListener('change', (e) => {
+        getSettings().swarmEnabled = e.target.checked;
+        saveSettings();
+        if (configContainer) configContainer.style.display = e.target.checked ? '' : 'none';
+    });
+
+    strategySelect?.addEventListener('change', (e) => {
+        const val = e.target.value;
+        getSettings().swarmStrategy = val;
+        saveSettings();
+        if (strategyDesc) strategyDesc.textContent = STRATEGY_META[val]?.description || '';
+
+        for (const type of Object.values(STRATEGY_TYPES)) {
+            const panel = document.getElementById(`redraft_swarm_panel_${type}`);
+            if (panel) panel.style.display = type === val ? '' : 'none';
+        }
+    });
+
+    document.querySelectorAll('.redraft-swarm-stage-toggle').forEach(toggle => {
+        toggle.addEventListener('change', (e) => {
+            const idx = parseInt(e.target.dataset.stageIndex, 10);
+            const settings = getSettings();
+            if (settings.swarmPipelineStages?.[idx]) {
+                settings.swarmPipelineStages[idx].enabled = e.target.checked;
+                saveSettings();
+            }
+        });
+    });
+
+    const councilSizeInput = document.getElementById('redraft_swarm_council_size');
+    councilSizeInput?.addEventListener('change', (e) => {
+        const val = Math.min(MAX_COUNCIL_SIZE, Math.max(MIN_COUNCIL_SIZE, parseInt(e.target.value, 10) || 3));
+        e.target.value = val;
+        getSettings().swarmCouncilSize = val;
+        saveSettings();
+        const overridesContainer = document.getElementById('redraft_swarm_model_overrides');
+        if (overridesContainer) {
+            overridesContainer.innerHTML = `<h5>Per-Agent Model Override <small>(plugin mode)</small></h5>` + buildCouncilModelOverridesHtml(getSettings());
+            bindModelOverrideInputs();
+        }
+    });
+
+    const judgeModeSelect = document.getElementById('redraft_swarm_judge_mode');
+    judgeModeSelect?.addEventListener('change', (e) => {
+        getSettings().swarmCouncilJudgeMode = e.target.value;
+        saveSettings();
+    });
+
+    bindModelOverrideInputs();
+    initSwarmStageDragDrop();
+
+    const timeoutInput = document.getElementById('redraft_swarm_timeout');
+    timeoutInput?.addEventListener('change', (e) => {
+        const val = Math.min(600, Math.max(30, parseInt(e.target.value, 10) || 180));
+        e.target.value = val;
+        getSettings().swarmTimeoutSeconds = val;
+        saveSettings();
+    });
+}
+
+function bindModelOverrideInputs() {
+    const saveOverride = (agentId, val) => {
+        const settings = getSettings();
+        if (!settings.swarmCouncilModelOverrides) settings.swarmCouncilModelOverrides = {};
+        if (val) {
+            settings.swarmCouncilModelOverrides[agentId] = val;
+        } else {
+            delete settings.swarmCouncilModelOverrides[agentId];
+        }
+        saveSettings();
+    };
+
+    document.querySelectorAll('.redraft-swarm-model-input').forEach(input => {
+        input.addEventListener('change', (e) => saveOverride(e.target.dataset.agentId, e.target.value.trim()));
+    });
+
+    document.querySelectorAll('.redraft-swarm-model-select').forEach(select => {
+        select.addEventListener('change', (e) => saveOverride(e.target.dataset.agentId, e.target.value));
+    });
+
+    const fetchBtn = document.getElementById('redraft_swarm_fetch_models');
+    if (fetchBtn) {
+        fetchBtn.addEventListener('click', async () => {
+            fetchBtn.disabled = true;
+            fetchBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Fetching...';
+            try {
+                const data = await pluginRequest('/models');
+                const models = data?.models;
+                if (!Array.isArray(models) || models.length === 0) {
+                    toastr.info('No models returned by the API', 'ReDraft');
+                    return;
+                }
+                _swarmModelCache = models;
+                toastr.success(`${models.length} model(s) loaded`, 'ReDraft');
+
+                const overrides = getSettings().swarmCouncilModelOverrides || {};
+                document.querySelectorAll('.redraft-swarm-model-select').forEach(select => {
+                    const agentId = select.dataset.agentId;
+                    const currentVal = overrides[agentId] || '';
+                    select.innerHTML = '<option value="">default</option>'
+                        + models.map(m => `<option value="${m.id}" ${m.id === currentVal ? 'selected' : ''}>${m.id}</option>`).join('');
+                    select.style.display = '';
+                });
+                document.querySelectorAll('.redraft-swarm-model-input').forEach(input => {
+                    input.style.display = 'none';
+                });
+            } catch (err) {
+                toastr.error('Failed to fetch models: ' + err.message, 'ReDraft');
+            } finally {
+                fetchBtn.disabled = false;
+                fetchBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i> Fetch Models';
+            }
+        });
+    }
+}
+
+function initSwarmStageDragDrop() {
+    const container = document.getElementById('redraft_swarm_stages');
+    if (!container) return;
+
+    let draggedEl = null;
+
+    container.querySelectorAll('.redraft-swarm-stage').forEach(stage => {
+        const handle = stage.querySelector('.redraft-swarm-stage-drag');
+        if (!handle) return;
+
+        handle.addEventListener('mousedown', () => {
+            stage.draggable = true;
+        });
+
+        stage.addEventListener('dragstart', (e) => {
+            draggedEl = stage;
+            stage.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        });
+
+        stage.addEventListener('dragend', () => {
+            stage.draggable = false;
+            stage.classList.remove('dragging');
+            draggedEl = null;
+            persistStageOrder();
+        });
+
+        stage.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            if (!draggedEl || draggedEl === stage) return;
+            const rect = stage.getBoundingClientRect();
+            const midY = rect.top + rect.height / 2;
+            if (e.clientY < midY) {
+                container.insertBefore(draggedEl, stage);
+            } else {
+                container.insertBefore(draggedEl, stage.nextSibling);
+            }
+        });
+    });
+}
+
+function persistStageOrder() {
+    const container = document.getElementById('redraft_swarm_stages');
+    if (!container) return;
+
+    const settings = getSettings();
+    const stages = settings.swarmPipelineStages || [];
+    const newOrder = [];
+
+    container.querySelectorAll('.redraft-swarm-stage').forEach(el => {
+        const idx = parseInt(el.dataset.stageIndex, 10);
+        if (stages[idx]) newOrder.push(stages[idx]);
+    });
+
+    if (newOrder.length === stages.length) {
+        settings.swarmPipelineStages = newOrder;
+        saveSettings();
+    }
+}
+
+function updateSwarmProgress(progress) {
+    const progressContainer = document.getElementById('redraft_swarm_progress');
+    if (!progressContainer) return;
+
+    progressContainer.style.display = '';
+
+    const titleEl = document.getElementById('redraft_swarm_progress_title');
+    const fillEl = document.getElementById('redraft_swarm_progress_fill');
+    const textEl = document.getElementById('redraft_swarm_progress_text');
+    const agentsEl = document.getElementById('redraft_swarm_agents');
+
+    if (titleEl) titleEl.textContent = `Swarm: ${progress.phase}`;
+    if (fillEl) fillEl.style.width = `${Math.round((progress.current / progress.total) * 100)}%`;
+
+    const statusLabel = progress.status === 'failed' ? 'failed' : progress.status;
+    if (textEl) textEl.textContent = `${progress.agentName} — ${statusLabel}`;
+
+    if (agentsEl) {
+        let agentEl = agentsEl.querySelector(`[data-agent="${CSS.escape(progress.agentName)}"]`);
+        if (!agentEl) {
+            agentEl = document.createElement('div');
+            agentEl.className = 'redraft-swarm-agent-status';
+            agentEl.dataset.agent = progress.agentName;
+            agentsEl.appendChild(agentEl);
+        }
+        const iconMap = {
+            done: 'fa-check',
+            running: 'fa-spinner fa-spin',
+            failed: 'fa-xmark',
+            queued: 'fa-clock',
+        };
+        const icon = iconMap[progress.status] || 'fa-clock';
+        agentEl.innerHTML = `<i class="fa-solid ${icon}"></i> <span>${progress.agentName}</span>`;
+        agentEl.className = `redraft-swarm-agent-status redraft-swarm-status-${progress.status}`;
+    }
+}
+
+function clearSwarmProgress() {
+    const progressContainer = document.getElementById('redraft_swarm_progress');
+    if (progressContainer) progressContainer.style.display = 'none';
+    const agentsEl = document.getElementById('redraft_swarm_agents');
+    if (agentsEl) agentsEl.innerHTML = '';
 }
 
 // ─── Custom Rules UI ────────────────────────────────────────────────
@@ -1708,7 +2692,7 @@ function bindSettingsUI() {
         enabledEl.addEventListener('change', (e) => {
             getSettings().enabled = e.target.checked;
             saveSettings();
-            updatePopoutAutoState();
+            updateSidebarAutoState();
         });
     }
 
@@ -1718,10 +2702,10 @@ function bindSettingsUI() {
         autoEl.checked = initSettings.autoRefine;
         autoEl.addEventListener('change', (e) => {
             getSettings().autoRefine = e.target.checked;
-            const popoutEl = document.getElementById('redraft_popout_auto');
-            if (popoutEl) popoutEl.checked = e.target.checked;
+            const sbEl = document.getElementById('redraft_sb_auto');
+            if (sbEl) sbEl.checked = e.target.checked;
             saveSettings();
-            updatePopoutAutoState();
+            updateSidebarAutoState();
         });
     }
 
@@ -1742,8 +2726,8 @@ function bindSettingsUI() {
         userAutoEnhanceEl.checked = initSettings.userAutoEnhance;
         userAutoEnhanceEl.addEventListener('change', (e) => {
             getSettings().userAutoEnhance = e.target.checked;
-            const popoutEl = document.getElementById('redraft_popout_user_auto_enhance');
-            if (popoutEl) popoutEl.checked = e.target.checked;
+            const sbEl = document.getElementById('redraft_sb_user_auto');
+            if (sbEl) sbEl.checked = e.target.checked;
             saveSettings();
         });
     }
@@ -1755,8 +2739,8 @@ function bindSettingsUI() {
         updateEnhanceModeUI(initSettings.userEnhanceMode || 'post');
         enhanceModeEl.addEventListener('change', (e) => {
             getSettings().userEnhanceMode = e.target.value;
-            const popoutEl = document.getElementById('redraft_popout_enhance_mode');
-            if (popoutEl) popoutEl.value = e.target.value;
+            const sbEl = document.getElementById('redraft_sb_enhance_mode');
+            if (sbEl) sbEl.value = e.target.value;
             saveSettings();
             updateEnhanceModeUI(e.target.value);
         });
@@ -1768,8 +2752,8 @@ function bindSettingsUI() {
         userPovEl.value = initSettings.userPov || '1st';
         userPovEl.addEventListener('change', (e) => {
             getSettings().userPov = e.target.value;
-            const popoutEl = document.getElementById('redraft_popout_user_pov');
-            if (popoutEl) popoutEl.value = e.target.value;
+            const sbEl = document.getElementById('redraft_sb_user_pov');
+            if (sbEl) sbEl.value = e.target.value;
             saveSettings();
         });
     }
@@ -1922,9 +2906,8 @@ function bindSettingsUI() {
         povEl.addEventListener('change', (e) => {
             const s = getSettings();
             s.pov = e.target.value;
-            // Sync with popout selector
-            const popoutPov = document.getElementById('redraft_popout_pov');
-            if (popoutPov) popoutPov.value = e.target.value;
+            const sbPovEl = document.getElementById('redraft_sb_pov');
+            if (sbPovEl) sbPovEl.value = e.target.value;
             saveSettings();
         });
     }
@@ -2125,41 +3108,37 @@ function bindSettingsUI() {
 
 
 
-    // Popout panel bindings
-    const popoutClose = document.getElementById('redraft_popout_close');
-    if (popoutClose) {
-        popoutClose.addEventListener('click', hidePopout);
-    }
+    // ─── Sidebar bindings ─────────────────────────────────────────────
+    const sbClose = document.getElementById('redraft_sb_close');
+    if (sbClose) sbClose.addEventListener('click', closeSidebar);
 
-    const popoutAuto = document.getElementById('redraft_popout_auto');
-    if (popoutAuto) {
-        popoutAuto.checked = initSettings.autoRefine;
-        popoutAuto.addEventListener('change', (e) => {
+    const sbAuto = document.getElementById('redraft_sb_auto');
+    if (sbAuto) {
+        sbAuto.checked = initSettings.autoRefine;
+        sbAuto.addEventListener('change', (e) => {
             const s = getSettings();
             s.autoRefine = e.target.checked;
             if (autoEl) autoEl.checked = e.target.checked;
             saveSettings();
-            updatePopoutAutoState();
+            updateSidebarAutoState();
         });
     }
 
-    // Popout PoV selector
-    const popoutPov = document.getElementById('redraft_popout_pov');
-    if (popoutPov) {
-        popoutPov.value = initSettings.pov || 'auto';
-        popoutPov.addEventListener('change', (e) => {
+    const sbPov = document.getElementById('redraft_sb_pov');
+    if (sbPov) {
+        sbPov.value = initSettings.pov || 'auto';
+        sbPov.addEventListener('change', (e) => {
             const s = getSettings();
             s.pov = e.target.value;
-            // Sync with main settings panel
             const mainPov = document.getElementById('redraft_pov');
             if (mainPov) mainPov.value = e.target.value;
             saveSettings();
         });
     }
 
-    const popoutRefine = document.getElementById('redraft_popout_refine');
-    if (popoutRefine) {
-        popoutRefine.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
+    const sbRefine = document.getElementById('redraft_sb_refine');
+    if (sbRefine) {
+        sbRefine.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
             const lastAiIdx = findLastAiMessageIndex();
             if (lastAiIdx >= 0) {
                 redraftMessage(lastAiIdx);
@@ -2169,9 +3148,9 @@ function bindSettingsUI() {
         }, 500, { leading: true, trailing: false }));
     }
 
-    const popoutEnhanceUser = document.getElementById('redraft_popout_enhance_user');
-    if (popoutEnhanceUser) {
-        popoutEnhanceUser.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
+    const sbEnhanceUser = document.getElementById('redraft_sb_enhance_user');
+    if (sbEnhanceUser) {
+        sbEnhanceUser.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
             const lastUserIdx = findLastUserMessageIndex();
             if (lastUserIdx >= 0) {
                 redraftMessage(lastUserIdx);
@@ -2181,18 +3160,17 @@ function bindSettingsUI() {
         }, 500, { leading: true, trailing: false }));
     }
 
-    const popoutEnhanceTextarea = document.getElementById('redraft_popout_enhance_textarea');
-    if (popoutEnhanceTextarea) {
-        popoutEnhanceTextarea.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
+    const sbEnhanceTextarea = document.getElementById('redraft_sb_enhance_textarea');
+    if (sbEnhanceTextarea) {
+        sbEnhanceTextarea.addEventListener('click', SillyTavern.libs.lodash.debounce(() => {
             enhanceTextarea();
         }, 500, { leading: true, trailing: false }));
     }
 
-    // Popout: user auto-enhance toggle
-    const popoutUserAuto = document.getElementById('redraft_popout_user_auto_enhance');
-    if (popoutUserAuto) {
-        popoutUserAuto.checked = initSettings.userAutoEnhance;
-        popoutUserAuto.addEventListener('change', (e) => {
+    const sbUserAuto = document.getElementById('redraft_sb_user_auto');
+    if (sbUserAuto) {
+        sbUserAuto.checked = initSettings.userAutoEnhance;
+        sbUserAuto.addEventListener('change', (e) => {
             const s = getSettings();
             s.userAutoEnhance = e.target.checked;
             const mainEl = document.getElementById('redraft_user_auto_enhance');
@@ -2201,11 +3179,10 @@ function bindSettingsUI() {
         });
     }
 
-    // Popout: user PoV selector
-    const popoutUserPov = document.getElementById('redraft_popout_user_pov');
-    if (popoutUserPov) {
-        popoutUserPov.value = initSettings.userPov || '1st';
-        popoutUserPov.addEventListener('change', (e) => {
+    const sbUserPov = document.getElementById('redraft_sb_user_pov');
+    if (sbUserPov) {
+        sbUserPov.value = initSettings.userPov || '1st';
+        sbUserPov.addEventListener('change', (e) => {
             const s = getSettings();
             s.userPov = e.target.value;
             const mainEl = document.getElementById('redraft_user_pov');
@@ -2214,11 +3191,10 @@ function bindSettingsUI() {
         });
     }
 
-    // Popout: enhance mode selector
-    const popoutEnhanceMode = document.getElementById('redraft_popout_enhance_mode');
-    if (popoutEnhanceMode) {
-        popoutEnhanceMode.value = initSettings.userEnhanceMode || 'post';
-        popoutEnhanceMode.addEventListener('change', (e) => {
+    const sbEnhanceMode = document.getElementById('redraft_sb_enhance_mode');
+    if (sbEnhanceMode) {
+        sbEnhanceMode.value = initSettings.userEnhanceMode || 'post';
+        sbEnhanceMode.addEventListener('change', (e) => {
             const s = getSettings();
             s.userEnhanceMode = e.target.value;
             const mainEl = document.getElementById('redraft_user_enhance_mode');
@@ -2232,12 +3208,10 @@ function bindSettingsUI() {
         });
     }
 
-    const popoutOpenSettings = document.getElementById('redraft_popout_open_settings');
-
-    if (popoutOpenSettings) {
-        popoutOpenSettings.addEventListener('click', () => {
-            hidePopout();
-
+    const sbOpenSettings = document.getElementById('redraft_sb_open_settings');
+    if (sbOpenSettings) {
+        sbOpenSettings.addEventListener('click', () => {
+            closeSidebar();
             const scrollToDrawer = () => {
                 const drawer = document.getElementById('redraft_settings');
                 if (!drawer) return;
@@ -2248,10 +3222,8 @@ function bindSettingsUI() {
                     if (toggle) toggle.click();
                 }
             };
-
             const drawer = document.getElementById('redraft_settings');
             const alreadyVisible = drawer && drawer.offsetParent !== null;
-
             if (alreadyVisible) {
                 scrollToDrawer();
             } else {
@@ -2262,9 +3234,13 @@ function bindSettingsUI() {
         });
     }
 
-    // Initialize popout drag & resize
-    initPopoutDrag();
-    initPopoutResize();
+    // Tab switching
+    document.querySelectorAll('.redraft-sidebar-tab').forEach(tab => {
+        tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+    });
+
+    // Initialize sidebar resize
+    initSidebarResize();
 
     // Render custom rules (AI refine + user enhance)
     renderCustomRules();
@@ -2320,7 +3296,7 @@ async function autoSaveConnection() {
     try {
         await pluginRequest('/config', 'POST', payload);
         await checkPluginStatus();
-        updatePopoutStatus();
+        updateSidebarStatus();
         showAutoSaveIndicator();
     } catch {
         // Silent — initial setup (no key yet) will 400, user uses Save button for that
@@ -2330,7 +3306,6 @@ async function autoSaveConnection() {
 function showAutoSaveIndicator() {
     const info = document.getElementById('redraft_connection_info');
     if (!info) return;
-    const prev = info.textContent;
     info.textContent = '\u2713 Saved';
     info.classList.add('redraft-autosave-flash');
     setTimeout(() => {
@@ -2373,7 +3348,7 @@ async function saveConnection() {
         toastr.success('Connection saved', 'ReDraft');
         await checkPluginStatus();
         updateConnectionModeUI();
-        updatePopoutStatus();
+        updateSidebarStatus();
     } catch (err) {
         toastr.error(err.message || 'Failed to save connection', 'ReDraft');
     }
@@ -2482,7 +3457,7 @@ function findLastUserMessageIndex() {
 function onCharacterMessageRendered(messageIndex) {
     const settings = getSettings();
     if (!settings.enabled || !settings.autoRefine) return;
-    if (isRefining) return;
+    if (isRefining || isBulkRefining) return;
 
     // Skip the greeting (always index 0)
     if (messageIndex === 0) return;
@@ -2499,7 +3474,7 @@ function onUserMessageRendered(messageIndex) {
     // In pre-send mode, the interceptor handles auto-enhance before generation.
     // In inplace mode, enhancement happens before sending via the textarea button.
     if (settings.userEnhanceMode === 'pre' || settings.userEnhanceMode === 'inplace') return;
-    if (isRefining) return;
+    if (isRefining || isBulkRefining) return;
 
     setTimeout(() => {
         redraftMessage(messageIndex);
@@ -2526,6 +3501,10 @@ function onMessageRendered() {
 
 function onChatChanged() {
     addMessageButtons();
+    const sidebar = document.getElementById('redraft_sidebar');
+    if (sidebar && sidebar.classList.contains('redraft-sidebar-open')) {
+        refreshActiveTab();
+    }
 }
 
 // ─── Slash Command ──────────────────────────────────────────────────
@@ -2618,7 +3597,19 @@ function registerSlashCommand() {
         helpString: '<div>Enhance a user message using ReDraft. Fixes grammar, matches your persona voice, checks lore. Optionally provide a message index, otherwise enhances the last user message.</div>',
     }));
 
-    console.log(`${LOG_PREFIX} Slash commands /redraft and /enhance registered`);
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'workbench',
+        callback: async () => {
+            toggleSidebar();
+            return '';
+        },
+        aliases: ['wb'],
+        returns: 'empty string',
+        unnamedArgumentList: [],
+        helpString: '<div>Toggle the ReDraft Workbench sidebar.</div>',
+    }));
+
+    console.log(`${LOG_PREFIX} Slash commands /redraft, /enhance, and /workbench registered`);
 }
 
 // ─── Pre-Send Interceptor ───────────────────────────────────────────
@@ -2639,7 +3630,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
 
     if (!settings.enabled || !settings.userEnhanceEnabled) return;
     if (settings.userEnhanceMode !== 'pre') return;
-    if (isRefining) return;
+    if (isRefining || isBulkRefining) return;
 
     // Only intercept normal user-initiated generations
     if (type === 'quiet' || type === 'impersonate') return;
@@ -3182,83 +4173,114 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     </div>
 </div>
 
-<!-- Floating Popout Panel (injected near bottom of body by JS) -->
-<div id="redraft_popout_panel" class="redraft-popout-panel" style="display: none;" role="dialog" aria-label="ReDraft quick panel">
-    <div class="redraft-popout-header" id="redraft_popout_drag_handle">
-        <i class="fa-solid fa-grip-lines redraft-drag-icon"></i>
-        <span class="redraft-popout-title">ReDraft</span>
-        <div id="redraft_popout_close" class="dragClose" title="Close">
-            <i class="fa-solid fa-xmark"></i>
-        </div>
+<!-- Sidebar Workbench (injected into body by JS) -->
+<div id="redraft_sidebar" class="redraft-sidebar" role="complementary" aria-label="ReDraft Workbench">
+    <div id="redraft_sidebar_resize" class="redraft-sidebar-resize" title="Resize"></div>
+    <div class="redraft-sidebar-header">
+        <span class="redraft-sidebar-title">ReDraft</span>
+        <div id="redraft_sb_close" class="redraft-sidebar-close" title="Close"><i class="fa-solid fa-xmark"></i></div>
     </div>
-    <div class="redraft-popout-body">
-        <div class="redraft-popout-section">
-            <div class="redraft-popout-row">
-                <label class="checkbox_label">
-                    <input type="checkbox" id="redraft_popout_auto" />
-                    <span>Auto-refine</span>
-                </label>
-                <div class="redraft-popout-pov">
-                    <small>PoV</small>
-                    <select id="redraft_popout_pov">
-                        <option value="auto">Auto</option>
-                        <option value="detect">Detect</option>
-                        <option value="1st">1st</option>
-                        <option value="1.5">1.5th</option>
-                        <option value="2nd">2nd</option>
-                        <option value="3rd">3rd</option>
+    <div class="redraft-sidebar-quick">
+        <div class="redraft-sb-section">
+            <div class="redraft-sb-row">
+                <label class="checkbox_label"><input type="checkbox" id="redraft_sb_auto" /><span>Auto-refine</span></label>
+                <div class="redraft-sb-pov"><small>PoV</small>
+                    <select id="redraft_sb_pov">
+                        <option value="auto">Auto</option><option value="detect">Detect</option>
+                        <option value="1st">1st</option><option value="1.5">1.5th</option>
+                        <option value="2nd">2nd</option><option value="3rd">3rd</option>
                     </select>
                 </div>
             </div>
         </div>
-        <div class="redraft-popout-section">
-            <div class="redraft-popout-row">
-                <label class="checkbox_label">
-                    <input type="checkbox" id="redraft_popout_user_auto_enhance" />
-                    <span>Auto-enhance</span>
-                </label>
-                <div class="redraft-popout-pov">
-                    <small>PoV</small>
-                    <select id="redraft_popout_user_pov">
-                        <option value="auto">Auto</option>
-                        <option value="detect">Detect</option>
-                        <option value="1st">1st</option>
-                        <option value="2nd">2nd</option>
-                        <option value="3rd">3rd</option>
+        <div class="redraft-sb-section">
+            <div class="redraft-sb-row">
+                <label class="checkbox_label"><input type="checkbox" id="redraft_sb_user_auto" /><span>Auto-enhance</span></label>
+                <div class="redraft-sb-pov"><small>PoV</small>
+                    <select id="redraft_sb_user_pov">
+                        <option value="auto">Auto</option><option value="detect">Detect</option>
+                        <option value="1st">1st</option><option value="2nd">2nd</option><option value="3rd">3rd</option>
                     </select>
                 </div>
             </div>
-            <div class="redraft-popout-row">
-                <small class="redraft-popout-mode-label">Mode</small>
-                <select id="redraft_popout_enhance_mode" class="redraft-popout-mode-select">
-                    <option value="pre">Pre-send</option>
-                    <option value="post">Post-send</option>
-                    <option value="inplace">In-place</option>
+            <div class="redraft-sb-row">
+                <small class="redraft-sb-mode-label">Mode</small>
+                <select id="redraft_sb_enhance_mode" class="redraft-sb-mode-select">
+                    <option value="pre">Pre-send</option><option value="post">Post-send</option><option value="inplace">In-place</option>
                 </select>
             </div>
         </div>
-        <div id="redraft_popout_status" class="redraft-popout-status"></div>
-        <div class="redraft-popout-actions">
-            <div id="redraft_popout_refine" class="menu_button">
-                <i class="fa-solid fa-pen-nib"></i>
-                <span>Refine Last AI Message</span>
-            </div>
-            <div id="redraft_popout_enhance_user" class="menu_button">
-                <i class="fa-solid fa-wand-magic-sparkles"></i>
-                <span>Enhance Last User Message</span>
-            </div>
-            <div id="redraft_popout_enhance_textarea" class="menu_button" style="display: none;">
-                <i class="fa-solid fa-wand-magic-sparkles"></i>
-                <span>Enhance Textarea</span>
-            </div>
-            <div id="redraft_popout_open_settings" class="menu_button">
-                <i class="fa-solid fa-gear"></i>
-                <span>Full Settings</span>
-            </div>
+        <div id="redraft_sb_status" class="redraft-sb-status"></div>
+        <div class="redraft-sb-actions">
+            <div id="redraft_sb_refine" class="menu_button"><i class="fa-solid fa-pen-nib"></i><span>Refine Last AI</span></div>
+            <div id="redraft_sb_enhance_user" class="menu_button"><i class="fa-solid fa-wand-magic-sparkles"></i><span>Enhance Last User</span></div>
+            <div id="redraft_sb_enhance_textarea" class="menu_button" style="display: none;"><i class="fa-solid fa-wand-magic-sparkles"></i><span>Enhance Textarea</span></div>
+            <div id="redraft_sb_open_settings" class="menu_button"><i class="fa-solid fa-gear"></i><span>Full Settings</span></div>
         </div>
     </div>
-    <div id="redraft_popout_resize_grip" class="redraft-resize-grip" title="Resize">
-        <i class="fa-solid fa-grip-lines-vertical"></i>
+    <div class="redraft-sidebar-tabs">
+        <div class="redraft-sidebar-tab active" data-tab="refine">Refine</div>
+        <div class="redraft-sidebar-tab" data-tab="history">History</div>
+        <div class="redraft-sidebar-tab" data-tab="stats">Stats</div>
+        <div class="redraft-sidebar-tab" data-tab="swarm">Swarm</div>
+    </div>
+    <div class="redraft-sidebar-content">
+        <div class="redraft-sidebar-tab-content active" data-tab="refine" id="redraft_tab_refine">
+            <div class="redraft-wb-filter-bar">
+                <button class="redraft-wb-filter active" data-filter="all">All</button>
+                <button class="redraft-wb-filter" data-filter="ai">AI</button>
+                <button class="redraft-wb-filter" data-filter="user">User</button>
+                <button class="redraft-wb-filter" data-filter="unrefined">Unrefined</button>
+            </div>
+            <div class="redraft-wb-select-bar">
+                <button id="redraft_wb_select_all" class="menu_button menu_button_icon"><i class="fa-solid fa-check-double"></i> Select visible</button>
+                <button id="redraft_wb_deselect" class="menu_button menu_button_icon"><i class="fa-solid fa-xmark"></i> Clear</button>
+                <span class="redraft-wb-selected-count" id="redraft_wb_count">0 selected</span>
+            </div>
+            <div class="redraft-wb-message-list" id="redraft_wb_messages"></div>
+            <details class="redraft-wb-overrides" id="redraft_wb_overrides">
+                <summary>Custom settings for this run</summary>
+                <div class="redraft-wb-overrides-body">
+                    <div class="redraft-form-group">
+                        <label>PoV override</label>
+                        <select id="redraft_wb_override_pov">
+                            <option value="">Use global</option><option value="auto">Auto</option><option value="detect">Detect</option>
+                            <option value="1st">1st</option><option value="1.5">1.5th</option>
+                            <option value="2nd">2nd</option><option value="3rd">3rd</option>
+                        </select>
+                    </div>
+                    <div class="redraft-form-group">
+                        <label>System prompt override</label>
+                        <textarea id="redraft_wb_override_sysprompt" class="text_pole redraft-system-prompt" rows="3" placeholder="Leave empty to use global"></textarea>
+                    </div>
+                </div>
+            </details>
+            <div class="redraft-wb-run-controls">
+                <div class="redraft-form-group">
+                    <label>Delay between messages: <span id="redraft_wb_delay_label">2s</span></label>
+                    <input type="range" id="redraft_wb_delay" min="0" max="10000" step="500" value="2000" />
+                </div>
+                <button id="redraft_wb_start" class="menu_button menu_button_icon redraft-wb-start-btn">
+                    <i class="fa-solid fa-play"></i> <span>Start (0)</span>
+                </button>
+            </div>
+            <div class="redraft-wb-progress" id="redraft_wb_progress" style="display: none;">
+                <div class="redraft-wb-progress-bar-track"><div class="redraft-wb-progress-bar-fill" id="redraft_wb_progress_fill"></div></div>
+                <div class="redraft-wb-progress-text" id="redraft_wb_progress_text">0 / 0</div>
+                <div class="redraft-wb-progress-current" id="redraft_wb_progress_current"></div>
+                <button id="redraft_wb_cancel" class="menu_button menu_button_icon"><i class="fa-solid fa-stop"></i> Cancel</button>
+            </div>
+            <div class="redraft-wb-summary" id="redraft_wb_summary" style="display: none;"></div>
+        </div>
+        <div class="redraft-sidebar-tab-content" data-tab="history" id="redraft_tab_history">
+            <div class="redraft-wb-history-list" id="redraft_wb_history"></div>
+        </div>
+        <div class="redraft-sidebar-tab-content" data-tab="stats" id="redraft_tab_stats">
+            <div class="redraft-wb-stats-grid" id="redraft_wb_stats"></div>
+        </div>
+        <div class="redraft-sidebar-tab-content" data-tab="swarm" id="redraft_tab_swarm">
+            <div class="redraft-wb-swarm" id="redraft_wb_swarm"></div>
+        </div>
     </div>
 </div>`;
 
@@ -3266,23 +4288,34 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     if (container) {
         container.insertAdjacentHTML('beforeend', settingsHtml);
 
-        // Move popout panel to body for proper positioning
-        const popout = document.getElementById('redraft_popout_panel');
-        if (popout) document.body.appendChild(popout);
+        // Move sidebar to body for proper positioning
+        const sidebar = document.getElementById('redraft_sidebar');
+        if (sidebar) document.body.appendChild(sidebar);
     }
 
     // Initialize settings and bind UI
     getSettings();
     bindSettingsUI();
 
-    // Create floating popout trigger
-    createPopoutTrigger();
+    // Create sidebar trigger button
+    createSidebarTrigger();
 
-    // First-run hint — show once to help users find the popout
+    // Restore sidebar state from settings
+    const savedSettings = getSettings();
+    const sidebarEl = document.getElementById('redraft_sidebar');
+    if (sidebarEl) {
+        sidebarEl.style.width = (savedSettings.sidebarWidth || 380) + 'px';
+        if (savedSettings.sidebarOpen) {
+            openSidebar();
+        }
+        switchTab(savedSettings.sidebarActiveTab || 'refine');
+    }
+
+    // First-run hint
     const initSettings = getSettings();
     if (!initSettings.hasSeenHint) {
         toastr.info(
-            'Use the ✏️ button in the bottom-right corner to quickly refine messages, toggle auto-refine, and adjust settings.',
+            'Use the ✏️ button in the bottom-right corner to open the ReDraft Workbench — refine messages, run bulk operations, and view stats.',
             'ReDraft — Tip',
             { timeOut: 8000, extendedTimeOut: 4000, positionClass: 'toast-bottom-right' }
         );
@@ -3294,15 +4327,10 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     await checkPluginStatus();
 
     // Register events
-    eventListenerRefs.messageRendered = () => onMessageRendered();
-    eventListenerRefs.charMessageRendered = (idx) => onCharacterMessageRendered(idx);
-    eventListenerRefs.userMessageRendered = (idx) => onUserMessageRendered(idx);
-    eventListenerRefs.chatChanged = () => onChatChanged();
-
-    eventSource.on(event_types.USER_MESSAGE_RENDERED, eventListenerRefs.messageRendered);
-    eventSource.on(event_types.USER_MESSAGE_RENDERED, eventListenerRefs.userMessageRendered);
-    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, eventListenerRefs.charMessageRendered);
-    eventSource.on(event_types.CHAT_CHANGED, eventListenerRefs.chatChanged);
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, () => onMessageRendered());
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, (idx) => onUserMessageRendered(idx));
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (idx) => onCharacterMessageRendered(idx));
+    eventSource.on(event_types.CHAT_CHANGED, () => onChatChanged());
 
     // Add buttons to any existing messages
     addMessageButtons();
