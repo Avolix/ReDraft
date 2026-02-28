@@ -1317,24 +1317,39 @@ let _triggerDurationTimeout = null;
 
 function setSidebarTriggerLoading(loading, lastDurationMs) {
     const trigger = document.getElementById('redraft_sidebar_trigger');
-    if (!trigger) return;
+    const formBtn = document.getElementById('redraft_formbar_trigger');
+    if (!trigger && !formBtn) return;
     if (loading) {
         if (_triggerDurationTimeout) {
             clearTimeout(_triggerDurationTimeout);
             _triggerDurationTimeout = null;
         }
-        trigger.classList.add('redraft-refining');
-        trigger.classList.remove('redraft-show-duration');
-        trigger.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
-        trigger.title = 'Click to stop drafting';
+        if (trigger) {
+            trigger.classList.add('redraft-refining');
+            trigger.classList.remove('redraft-show-duration');
+            trigger.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+            trigger.title = 'Click to stop drafting';
+        }
+        if (formBtn) {
+            formBtn.classList.add('redraft-refining');
+            formBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+            formBtn.title = 'Click to stop drafting';
+        }
     } else {
-        trigger.classList.remove('redraft-refining');
+        if (trigger) trigger.classList.remove('redraft-refining');
+        if (formBtn) {
+            formBtn.classList.remove('redraft-refining');
+            formBtn.innerHTML = '<i class="fa-solid fa-pen-nib"></i>';
+            formBtn.title = 'ReDraft Workbench';
+        }
         if (typeof lastDurationMs === 'number' && lastDurationMs >= 0) {
             const sec = lastDurationMs / 1000;
             const durationText = sec >= 10 ? `${Math.round(sec)}s` : sec % 1 === 0 ? `${sec}s` : `${sec.toFixed(1)}s`;
-            trigger.classList.add('redraft-show-duration');
-            trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-trigger-duration">' + durationText + '</span><span class="redraft-auto-dot"></span>';
-            trigger.title = `ReDraft \u2014 last refine: ${durationText}`;
+            if (trigger) {
+                trigger.classList.add('redraft-show-duration');
+                trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-trigger-duration">' + durationText + '</span><span class="redraft-auto-dot"></span>';
+                trigger.title = `ReDraft \u2014 last refine: ${durationText}`;
+            }
             updateSidebarAutoState();
             if (_triggerDurationTimeout) clearTimeout(_triggerDurationTimeout);
             _triggerDurationTimeout = setTimeout(() => {
@@ -1348,9 +1363,11 @@ function setSidebarTriggerLoading(loading, lastDurationMs) {
                 }
             }, 15000);
         } else {
-            trigger.classList.remove('redraft-show-duration');
-            trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-auto-dot"></span>';
-            trigger.title = 'ReDraft';
+            if (trigger) {
+                trigger.classList.remove('redraft-show-duration');
+                trigger.innerHTML = '<i class="fa-solid fa-pen-nib"></i><span class="redraft-auto-dot"></span>';
+                trigger.title = 'ReDraft';
+            }
             updateSidebarAutoState();
         }
     }
@@ -1532,7 +1549,34 @@ function createSidebarTrigger() {
     });
     document.body.appendChild(trigger);
 
+    createFormBarTrigger();
     updateSidebarAutoState();
+}
+
+/**
+ * Inject a workbench toggle into ST's send form so it's always visible
+ * on mobile where the floating trigger can be obscured.
+ */
+function createFormBarTrigger() {
+    if (document.getElementById('redraft_formbar_trigger')) return;
+
+    const btn = document.createElement('div');
+    btn.id = 'redraft_formbar_trigger';
+    btn.className = 'interactable redraft-formbar-trigger';
+    btn.title = 'ReDraft Workbench';
+    btn.setAttribute('tabindex', '0');
+    btn.innerHTML = '<i class="fa-solid fa-pen-nib"></i>';
+    btn.addEventListener('click', toggleSidebar);
+
+    const sendForm = document.getElementById('send_form');
+    if (!sendForm) return;
+
+    const textarea = document.getElementById('send_textarea');
+    if (textarea) {
+        sendForm.insertBefore(btn, textarea);
+    } else {
+        sendForm.prepend(btn);
+    }
 }
 
 function initSidebarResize() {
@@ -4315,7 +4359,7 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     const initSettings = getSettings();
     if (!initSettings.hasSeenHint) {
         toastr.info(
-            'Use the ✏️ button in the bottom-right corner to open the ReDraft Workbench — refine messages, run bulk operations, and view stats.',
+            'Use the ✏️ pen-nib button (in the message bar, or bottom-right corner) to open the ReDraft Workbench — refine messages, run bulk operations, and view stats.',
             'ReDraft — Tip',
             { timeOut: 8000, extendedTimeOut: 4000, positionClass: 'toast-bottom-right' }
         );
