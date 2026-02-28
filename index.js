@@ -109,6 +109,7 @@ const defaultSettings = Object.freeze({
     swarmCouncilSize: 3,
     swarmCouncilJudgeMode: 'synthesize', // 'pick_best' | 'synthesize'
     swarmCouncilModelOverrides: {},      // { agentId: modelString } plugin mode only
+    swarmTimeoutSeconds: 180,            // per-agent timeout for swarm calls (longer than default to handle slower models)
 });
 
 // POV_INSTRUCTIONS imported from ./lib/prompt-builder.js
@@ -736,7 +737,7 @@ async function refineViaPlugin(promptText, systemPrompt, { signal, model, timeou
         { role: 'user', content: promptText },
     ];
 
-    const timeout = timeoutOverride || getSettings().requestTimeoutSeconds ?? 120;
+    const timeout = timeoutOverride || (getSettings().requestTimeoutSeconds ?? 120);
     const body = { messages, timeout };
     if (model) body.model = model;
     const result = await pluginRequest('/refine', 'POST', body, { signal });
@@ -929,6 +930,7 @@ async function _refineMessageSwarm(messageIndex, { signal, overrides, showDiff =
         settings,
         refineFn,
         signal,
+        timeoutSeconds: settings.swarmTimeoutSeconds || 180,
         onProgress: (progress) => {
             console.debug(`${LOG_PREFIX} [swarm] ${progress.phase}: ${progress.agentName} [${progress.status}] (${progress.current}/${progress.total})`);
             updateSwarmProgress(progress);
@@ -2200,6 +2202,14 @@ function renderSwarmTab() {
                 <h4>Review + Refine</h4>
                 <p class="redraft-swarm-hint">A reviewer analyzes the message and produces a structured critique. A refiner then applies the critique. No additional configuration needed.</p>
             </div>
+
+            <div class="redraft-swarm-timeout">
+                <div class="redraft-swarm-field">
+                    <label>Per-agent timeout</label>
+                    <input type="number" id="redraft_swarm_timeout" class="text_pole" min="30" max="600" value="${settings.swarmTimeoutSeconds || 180}" /> <span class="redraft-swarm-hint">seconds</span>
+                </div>
+                <small class="redraft-swarm-hint">Higher than normal timeout since swarm sends multiple requests. Increase if slower models time out.</small>
+            </div>
         </div>
 
         <div class="redraft-swarm-progress" id="redraft_swarm_progress" style="display:none">
@@ -2303,6 +2313,14 @@ function bindSwarmUI() {
 
     bindModelOverrideInputs();
     initSwarmStageDragDrop();
+
+    const timeoutInput = document.getElementById('redraft_swarm_timeout');
+    timeoutInput?.addEventListener('change', (e) => {
+        const val = Math.min(600, Math.max(30, parseInt(e.target.value, 10) || 180));
+        e.target.value = val;
+        getSettings().swarmTimeoutSeconds = val;
+        saveSettings();
+    });
 }
 
 function bindModelOverrideInputs() {

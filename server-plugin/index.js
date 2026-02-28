@@ -14,7 +14,7 @@ const { getUserId, getConfigPath: _getConfigPath, maskKey, validateApiUrl, sanit
 const CONFIG_DIR = __dirname;
 const MODULE_NAME = 'redraft';
 /** Server plugin version (semver). Bump when releasing server-plugin changes; client shows this in settings. */
-const SERVER_PLUGIN_VERSION = '1.3.0';
+const SERVER_PLUGIN_VERSION = '1.4.0';
 const REQUEST_TIMEOUT_MS = 120_000;
 const MAX_BODY_SIZE_BYTES = 512 * 1024; // 512 KB
 const MAX_LLM_ATTEMPTS = 3;
@@ -376,7 +376,7 @@ async function init(router) {
                 return res.status(400).json({ error: 'messages must be a non-empty array' });
             }
 
-            timeoutMs = (requestedTimeout && Number(requestedTimeout) >= 15 && Number(requestedTimeout) <= 300)
+            timeoutMs = (requestedTimeout && Number(requestedTimeout) >= 15 && Number(requestedTimeout) <= 600)
                 ? Number(requestedTimeout) * 1000
                 : REQUEST_TIMEOUT_MS;
 
