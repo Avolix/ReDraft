@@ -185,6 +185,8 @@ function getUserPersonaDescription() {
 // ─── State ──────────────────────────────────────────────────────────
 
 let isRefining = false; // Re-entrancy guard
+let isBulkRefining = false; // Bulk-refine guard (prevents single-refine during batch)
+let bulkCancelled = false; // Set to true to stop the bulk loop after current message
 let activeAbortController = null; // AbortController for the in-flight refinement request
 let pluginAvailable = false; // Whether server plugin is reachable
 let eventListenerRefs = {}; // For cleanup
@@ -606,17 +608,141 @@ function buildUserEnhancePrompt(settings, context, chatArray, messageIndex, stri
 }
 
 /**
+ * Core refinement pipeline shared by single-refine and bulk-refine.
+ * Handles: save original, strip blocks, build prompt, call LLM, parse changelog,
+ * restore blocks, update message, save chat, re-render, persist diff metadata,
+ * show undo/diff buttons, and append to refinement history.
+ *
+ * Does NOT manage: isRefining guard, toasts, abort controller lifecycle,
+ * sidebar/trigger loading state, or notification sound.
+ *
+ * @param {number} messageIndex Index in context.chat
+ * @param {object} [opts]
+ * @param {AbortSignal} [opts.signal] Abort signal for cancellation
+ * @param {object} [opts.overrides] Per-batch setting overrides { pov, systemPrompt, rulesText, userPov, userSystemPrompt, userRulesText }
+ * @param {boolean} [opts.showDiff=true] Whether to auto-show the diff popup
+ * @returns {Promise<{durationMs: number, wordDelta: {deleted: number, inserted: number}}>}
+ */
+async function _refineMessageCore(messageIndex, { signal, overrides, showDiff = true } = {}) {
+    const context = SillyTavern.getContext();
+    const { chat, saveChat, chatMetadata, saveMetadata } = context;
+    const message = chat[messageIndex];
+    const settings = getSettings();
+    const refineStartTime = Date.now();
+
+    // Save original to chatMetadata for undo
+    if (!chatMetadata['redraft_originals']) {
+        chatMetadata['redraft_originals'] = {};
+    }
+    chatMetadata['redraft_originals'][messageIndex] = message.mes;
+    await saveMetadata();
+
+    // Strip structured content before sending to LLM
+    const { stripped: strippedMessage, blocks: protectedBlocks } = stripProtectedBlocks(message.mes, {
+        protectFontTags: settings.protectFontTags,
+    });
+
+    const isUserMessage = !!message.is_user;
+    let systemPrompt;
+    let promptText;
+
+    if (isUserMessage) {
+        ({ systemPrompt, promptText } = buildUserEnhancePrompt(
+            overrides ? { ...settings, ..._applyUserOverrides(settings, overrides) } : settings,
+            context, chat, messageIndex, strippedMessage,
+        ));
+        console.debug(`${LOG_PREFIX} Enhancing user message ${messageIndex}`);
+    } else {
+        const effectiveSettings = overrides ? { ...settings } : settings;
+        const reasoning = settings.reasoningContext ? (message.extra?.reasoning || '') : '';
+        ({ systemPrompt, promptText } = _buildAiRefinePrompt(
+            effectiveSettings, context, chat, messageIndex, strippedMessage, {
+                rulesText: overrides?.rulesText ?? compileRules(settings),
+                systemPrompt: overrides?.systemPrompt ?? (settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT),
+                reasoning,
+            },
+        ));
+    }
+
+    const actionVerb = isUserMessage ? 'enhancement' : 'refinement';
+    console.debug(`${LOG_PREFIX} [prompt] System prompt (${systemPrompt.length} chars):`, systemPrompt.substring(0, 200) + '\u2026');
+    console.debug(`${LOG_PREFIX} [prompt] Full ${actionVerb} prompt (${promptText.length} chars):`);
+    console.debug(promptText);
+
+    // Call refinement via the appropriate mode
+    let refinedText;
+    if (settings.connectionMode === 'plugin') {
+        refinedText = await refineViaPlugin(promptText, systemPrompt, { signal });
+    } else {
+        refinedText = await refineViaST(promptText, systemPrompt, { signal });
+    }
+
+    // Parse changelog from response
+    const { changelog, refined: cleanRefined } = parseChangelog(refinedText);
+    if (changelog) {
+        console.log(`${LOG_PREFIX} [changelog]`, changelog);
+    }
+
+    // Restore protected blocks and write refined text back
+    refinedText = restoreProtectedBlocks(cleanRefined, protectedBlocks);
+    const originalText = message.mes;
+    message.mes = refinedText;
+    await saveChat();
+
+    // Re-render the message in the UI
+    rerenderMessage(messageIndex);
+
+    // Persist diff data so diff button can be restored on reload
+    if (!chatMetadata['redraft_diffs']) chatMetadata['redraft_diffs'] = {};
+    chatMetadata['redraft_diffs'][messageIndex] = { original: originalText, changelog: changelog || null };
+    await saveMetadata();
+
+    // Show undo + diff buttons
+    showUndoButton(messageIndex);
+    showDiffButton(messageIndex, originalText, refinedText, changelog);
+
+    // Auto-show diff popup if toggle is on (suppressed during bulk)
+    if (showDiff && settings.showDiffAfterRefine) {
+        showDiffPopup(originalText, refinedText, changelog);
+    }
+
+    const durationMs = Date.now() - refineStartTime;
+    console.log(`${LOG_PREFIX} Message ${messageIndex} refined successfully (mode: ${settings.connectionMode}) in ${(durationMs / 1000).toFixed(1)}s`);
+
+    // Compute word delta
+    const countWords = (text) => text.trim().split(/\s+/).filter(Boolean).length;
+    const oldWords = countWords(originalText);
+    const newWords = countWords(refinedText);
+
+    return {
+        durationMs,
+        wordDelta: { deleted: Math.max(0, oldWords - newWords), inserted: Math.max(0, newWords - oldWords) },
+    };
+}
+
+/**
+ * Apply user-message overrides to settings for buildUserEnhancePrompt.
+ * Returns a partial settings object to spread over the base settings.
+ */
+function _applyUserOverrides(settings, overrides) {
+    const patch = {};
+    if (overrides.userPov) patch.userPov = overrides.userPov;
+    if (overrides.userSystemPrompt) patch.userSystemPrompt = overrides.userSystemPrompt;
+    return patch;
+}
+
+/**
  * Refine a message at the given index.
  * @param {number} messageIndex Index in context.chat
  */
 async function redraftMessage(messageIndex) {
-    if (isRefining) {
-        cancelRedraft();
+    if (isRefining || isBulkRefining) {
+        if (isRefining) cancelRedraft();
         return;
     }
 
     const context = SillyTavern.getContext();
-    const { chat, saveChat, chatMetadata, saveMetadata } = context;
+    const { chat } = context;
 
     if (!chat || messageIndex < 0 || messageIndex >= chat.length) {
         toastr.error('Invalid message index', 'ReDraft');
@@ -632,7 +758,6 @@ async function redraftMessage(messageIndex) {
     const settings = getSettings();
     let refineSucceeded = false;
 
-    // Check if plugin mode is selected but plugin is unavailable
     if (settings.connectionMode === 'plugin' && !pluginAvailable) {
         toastr.error(
             'ReDraft server plugin is not available. Install it once (see Install server plugin in ReDraft settings), then restart SillyTavern.',
@@ -642,102 +767,27 @@ async function redraftMessage(messageIndex) {
         return;
     }
 
-    // Set re-entrancy guard, create abort controller, and start timer
     isRefining = true;
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
     const refineStartTime = Date.now();
     setPopoutTriggerLoading(true);
 
-    // Clean up stale undo/diff buttons from prior refinement of this message
-    // (fixes compare showing wrong diff after swiping in auto mode)
     hideUndoButton(messageIndex);
     hideDiffButton(messageIndex);
 
-    // Show loading state on the message button + toast
     const isUserMessage = !!message.is_user;
     setMessageButtonLoading(messageIndex, true);
     toastr.info(isUserMessage ? 'Enhancing message\u2026' : 'Refining message\u2026', 'ReDraft');
 
     try {
-        // Save original to chatMetadata for undo
-        if (!chatMetadata['redraft_originals']) {
-            chatMetadata['redraft_originals'] = {};
-        }
-        chatMetadata['redraft_originals'][messageIndex] = message.mes;
-        await saveMetadata();
-
-        // Strip structured content (code fences, HTML, bracket blocks, optionally font tags) before sending to LLM
-        const { stripped: strippedMessage, blocks: protectedBlocks } = stripProtectedBlocks(message.mes, {
-            protectFontTags: settings.protectFontTags,
-        });
-
-        let systemPrompt;
-        let promptText;
-
-        if (isUserMessage) {
-            // ── User message enhancement ──
-            ({ systemPrompt, promptText } = buildUserEnhancePrompt(settings, context, chat, messageIndex, strippedMessage));
-            console.debug(`${LOG_PREFIX} Enhancing user message ${messageIndex}`);
-        } else {
-            // ── AI message refinement ──
-            const reasoning = settings.reasoningContext ? (message.extra?.reasoning || '') : '';
-            ({ systemPrompt, promptText } = _buildAiRefinePrompt(settings, context, chat, messageIndex, strippedMessage, {
-                rulesText: compileRules(settings),
-                systemPrompt: settings.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT,
-                reasoning,
-            }));
-        }
-
-        const actionVerb = isUserMessage ? 'enhancement' : 'refinement';
-        console.debug(`${LOG_PREFIX} [prompt] System prompt (${systemPrompt.length} chars):`, systemPrompt.substring(0, 200) + '\u2026');
-        console.debug(`${LOG_PREFIX} [prompt] Full ${actionVerb} prompt (${promptText.length} chars):`);
-        console.debug(promptText);
-
-        // Call refinement via the appropriate mode
-        let refinedText;
-        if (settings.connectionMode === 'plugin') {
-            refinedText = await refineViaPlugin(promptText, systemPrompt, { signal });
-        } else {
-            refinedText = await refineViaST(promptText, systemPrompt, { signal });
-        }
-
-        // Parse changelog from response
-        const { changelog, refined: cleanRefined } = parseChangelog(refinedText);
-        if (changelog) {
-            console.log(`${LOG_PREFIX} [changelog]`, changelog);
-        }
-
-        // Restore protected blocks and write refined text back
-        refinedText = restoreProtectedBlocks(cleanRefined, protectedBlocks);
-        const originalText = message.mes;
-        message.mes = refinedText;
-        await saveChat();
-
-        // Re-render the message in the UI
-        rerenderMessage(messageIndex);
-
-        // Persist diff data so diff button can be restored on reload
-        if (!chatMetadata['redraft_diffs']) chatMetadata['redraft_diffs'] = {};
-        chatMetadata['redraft_diffs'][messageIndex] = { original: originalText, changelog: changelog || null };
-        await saveMetadata();
-
-        // Show undo + diff buttons
-        showUndoButton(messageIndex);
-        showDiffButton(messageIndex, originalText, refinedText, changelog);
-
-        // Auto-show diff popup if toggle is on
-        if (settings.showDiffAfterRefine) {
-            showDiffPopup(originalText, refinedText, changelog);
-        }
+        await _refineMessageCore(messageIndex, { signal });
 
         toastr.success(isUserMessage ? 'Message enhanced' : 'Message refined', 'ReDraft');
         playNotificationSound();
         refineSucceeded = true;
         const refineMs = Date.now() - refineStartTime;
         setPopoutTriggerLoading(false, refineMs);
-        console.log(`${LOG_PREFIX} Message ${messageIndex} refined successfully (mode: ${settings.connectionMode}) in ${(refineMs / 1000).toFixed(1)}s`);
-
     } catch (err) {
         if (err.name === 'AbortError') {
             toastr.info('Drafting stopped', 'ReDraft');
@@ -750,7 +800,6 @@ async function redraftMessage(messageIndex) {
         isRefining = false;
         activeAbortController = null;
         setMessageButtonLoading(messageIndex, false);
-        // Only clear loading here on failure; success path already called setPopoutTriggerLoading(false, refineMs)
         if (!refineSucceeded) {
             setPopoutTriggerLoading(false);
         }
