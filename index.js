@@ -1556,26 +1556,40 @@ function createSidebarTrigger() {
 /**
  * Inject a workbench toggle into ST's send form so it's always visible
  * on mobile where the floating trigger can be obscured.
+ * Retries injection if the form isn't in the DOM yet.
  */
-function createFormBarTrigger() {
+function createFormBarTrigger(retries = 10) {
     if (document.getElementById('redraft_formbar_trigger')) return;
 
     const btn = document.createElement('div');
     btn.id = 'redraft_formbar_trigger';
-    btn.className = 'interactable redraft-formbar-trigger';
+    btn.className = 'menu_button interactable redraft-formbar-trigger';
     btn.title = 'ReDraft Workbench';
     btn.setAttribute('tabindex', '0');
     btn.innerHTML = '<i class="fa-solid fa-pen-nib"></i>';
     btn.addEventListener('click', toggleSidebar);
 
-    const sendForm = document.getElementById('send_form');
-    if (!sendForm) return;
+    const leftForm = document.getElementById('leftSendForm');
+    if (leftForm) {
+        leftForm.appendChild(btn);
+        return;
+    }
 
-    const textarea = document.getElementById('send_textarea');
-    if (textarea) {
-        sendForm.insertBefore(btn, textarea);
+    const sendForm = document.getElementById('send_form');
+    if (sendForm) {
+        const textarea = document.getElementById('send_textarea');
+        if (textarea) {
+            sendForm.insertBefore(btn, textarea);
+        } else {
+            sendForm.prepend(btn);
+        }
+        return;
+    }
+
+    if (retries > 0) {
+        setTimeout(() => createFormBarTrigger(retries - 1), 500);
     } else {
-        sendForm.prepend(btn);
+        console.warn(`${LOG_PREFIX} Could not find send form to inject form bar trigger`);
     }
 }
 
@@ -3804,8 +3818,11 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
 (async function init() {
     console.log(`${LOG_PREFIX} Loading...`);
 
-    const context = SillyTavern.getContext();
-    const { eventSource, event_types } = context;
+    let context, eventSource, event_types;
+    try {
+
+    context = SillyTavern.getContext();
+    ({ eventSource, event_types } = context);
 
     // Load settings HTML (inlined to avoid path resolution issues with third-party extensions)
     const settingsHtml = `
@@ -4383,4 +4400,8 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     registerSlashCommand();
 
     console.log(`${LOG_PREFIX} Loaded successfully (mode: ${getSettings().connectionMode})`);
+
+    } catch (err) {
+        console.error(`${LOG_PREFIX} Initialization failed:`, err);
+    }
 })();

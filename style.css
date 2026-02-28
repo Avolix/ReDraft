@@ -45,31 +45,13 @@
     white-space: nowrap;
 }
 
-/* ─── Form Bar Trigger (inside #send_form) ───────────────────────── */
+/* ─── Form Bar Trigger (inside #leftSendForm / #send_form) ───────── */
 .redraft-formbar-trigger {
-    display: flex;
-    align-items: center;
-    justify-content: center;
     flex-shrink: 0;
-    width: var(--bottomFormIconSize, 24px);
-    height: var(--bottomFormIconSize, 24px);
-    font-size: calc(var(--mainFontSize, 15px) * 1.05);
-    color: var(--SmartThemeBodyColor);
-    opacity: 0.7;
     cursor: pointer;
-    transition: opacity 150ms ease, color 150ms ease;
-    padding: 0;
-    border: none;
-    background: none;
-}
-
-.redraft-formbar-trigger:hover,
-.redraft-formbar-trigger:focus-visible {
-    opacity: 1;
 }
 
 .redraft-formbar-trigger.redraft-refining {
-    opacity: 1;
     color: var(--active, #7b68ee);
 }
 
@@ -617,12 +599,6 @@
 
     .redraft-sidebar-trigger {
         display: none;
-    }
-
-    .redraft-formbar-trigger {
-        width: 28px;
-        height: 28px;
-        font-size: calc(var(--mainFontSize, 15px) * 1.1);
     }
 }
 
