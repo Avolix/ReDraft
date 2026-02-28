@@ -13,16 +13,12 @@ import {
     stripProtectedBlocks,
     restoreProtectedBlocks,
     parseChangelog,
-    detectPov,
-    tokenize,
-    lcsTable,
     computeWordDiff,
 } from './lib/text-utils.js';
 import {
     buildAiRefinePrompt as _buildAiRefinePrompt,
     buildUserEnhancePrompt as _buildUserEnhancePrompt,
-    POV_INSTRUCTIONS,
-    USER_POV_INSTRUCTIONS,
+    buildRefineContextBlock as _buildRefineContextBlock,
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_USER_ENHANCE_SYSTEM_PROMPT,
 } from './lib/prompt-builder.js';
@@ -204,7 +200,6 @@ let isBulkRefining = false; // Bulk-refine guard (prevents single-refine during 
 let bulkCancelled = false; // Set to true to stop the bulk loop after current message
 let activeAbortController = null; // AbortController for the in-flight refinement request
 let pluginAvailable = false; // Whether server plugin is reachable
-let eventListenerRefs = {}; // For cleanup
 function cancelRedraft() {
     if (activeAbortController) {
         activeAbortController.abort();
@@ -512,9 +507,6 @@ async function pluginRequest(endpoint, method = 'GET', body = null, { signal } =
     } catch {
         const trimmed = (text || '').trim();
         if (trimmed.startsWith('<') || trimmed.toLowerCase().startsWith('<!doctype')) {
-            const fullUrl = typeof window !== 'undefined' && window.location
-                ? new URL(url, window.location.origin).href
-                : url;
             const isLocalhost = typeof window !== 'undefined' && window.location &&
                 /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(window.location.origin);
             let hint = '';
@@ -709,7 +701,7 @@ function updateEnhanceModeUI(mode) {
 /**
  * Send refinement request via ST's generateRaw().
  */
-async function refineViaST(promptText, systemPrompt, { signal, model } = {}) {
+async function refineViaST(promptText, systemPrompt, { signal, model: _model } = {}) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
     const { generateRaw } = SillyTavern.getContext();
@@ -892,29 +884,8 @@ async function _refineMessageSwarm(messageIndex, { signal, overrides, showDiff =
 
     const strategyConfig = resolveStrategyConfig(settings);
 
-    const contextParts = [];
-    const char = context.characters?.[context.characterId];
-    const charLimit = Math.min(4000, Math.max(100, settings.characterContextChars ?? 500));
-    const charDesc = char?.data?.personality
-        || char?.data?.description?.substring(0, charLimit)
-        || '';
-
-    if (context.name2 || charDesc) {
-        contextParts.push(`Character: ${context.name2 || 'Unknown'}${charDesc ? ' \u2014 ' + charDesc : ''}`);
-    }
-    if (context.name1) {
-        contextParts.push(`User character: ${context.name1}`);
-    }
-
-    const messagesBeforeThis = chat.slice(0, messageIndex);
-    const lastUserMsgBefore = [...messagesBeforeThis].reverse().find(m => m.is_user && m.mes);
-    if (lastUserMsgBefore) {
-        contextParts.push(`Last user message:\n${lastUserMsgBefore.mes}`);
-    }
-
-    const contextBlock = contextParts.length > 0
-        ? `Context:\n${contextParts.join('\n\n')}`
-        : '';
+    const reasoning = settings.reasoningContext ? (message.extra?.reasoning || '') : '';
+    const contextBlock = _buildRefineContextBlock(settings, context, chat, messageIndex, strippedMessage, { reasoning });
 
     const fullRulesText = overrides?.rulesText ?? compileRules(settings);
     const refineFn = settings.connectionMode === 'plugin' ? refineViaPlugin : refineViaST;
@@ -1024,7 +995,6 @@ async function redraftMessage(messageIndex) {
     isRefining = true;
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
-    const refineStartTime = Date.now();
     setSidebarTriggerLoading(true);
 
     hideUndoButton(messageIndex);
@@ -1828,7 +1798,6 @@ async function bulkRedraft(targetIndices, overrides = null) {
 
     const progressEl = document.getElementById('redraft_wb_progress');
     const summaryEl = document.getElementById('redraft_wb_summary');
-    const pickerEl = document.getElementById('redraft_wb_messages');
     const runControls = document.querySelector('.redraft-wb-run-controls');
     const fillEl = document.getElementById('redraft_wb_progress_fill');
     const textEl = document.getElementById('redraft_wb_progress_text');
@@ -1892,7 +1861,11 @@ async function bulkRedraft(targetIndices, overrides = null) {
         if (i < total - 1 && !bulkCancelled) {
             const delay = settings.bulkDelayMs || 2000;
             if (delay > 0) {
-                await new Promise(resolve => setTimeout(resolve, delay));
+                await new Promise(resolve => {
+                    const timer = setTimeout(resolve, delay);
+                    const onAbort = () => { clearTimeout(timer); resolve(); };
+                    signal.addEventListener('abort', onAbort, { once: true });
+                });
             }
         }
     }
@@ -3333,7 +3306,6 @@ async function autoSaveConnection() {
 function showAutoSaveIndicator() {
     const info = document.getElementById('redraft_connection_info');
     if (!info) return;
-    const prev = info.textContent;
     info.textContent = '\u2713 Saved';
     info.classList.add('redraft-autosave-flash');
     setTimeout(() => {
@@ -4355,15 +4327,10 @@ globalThis.redraftGenerateInterceptor = async function (chat, contextSize, abort
     await checkPluginStatus();
 
     // Register events
-    eventListenerRefs.messageRendered = () => onMessageRendered();
-    eventListenerRefs.charMessageRendered = (idx) => onCharacterMessageRendered(idx);
-    eventListenerRefs.userMessageRendered = (idx) => onUserMessageRendered(idx);
-    eventListenerRefs.chatChanged = () => onChatChanged();
-
-    eventSource.on(event_types.USER_MESSAGE_RENDERED, eventListenerRefs.messageRendered);
-    eventSource.on(event_types.USER_MESSAGE_RENDERED, eventListenerRefs.userMessageRendered);
-    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, eventListenerRefs.charMessageRendered);
-    eventSource.on(event_types.CHAT_CHANGED, eventListenerRefs.chatChanged);
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, () => onMessageRendered());
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, (idx) => onUserMessageRendered(idx));
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (idx) => onCharacterMessageRendered(idx));
+    eventSource.on(event_types.CHAT_CHANGED, () => onChatChanged());
 
     // Add buttons to any existing messages
     addMessageButtons();

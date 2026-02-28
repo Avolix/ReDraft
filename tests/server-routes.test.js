@@ -4,7 +4,7 @@
  * Uses vi.spyOn with selective pass-through: config-related fs calls are
  * mocked while .js file reads (needed by require()) pass to the real fs.
  */
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     buildAiRefinePrompt,
     buildUserEnhancePrompt,
+    buildRefineContextBlock,
     extractReasoningTags,
     truncateReasoning,
     POV_INSTRUCTIONS,
@@ -24,7 +25,7 @@ function makeContext({ name1 = 'Player', name2 = 'NPC', personality = '', descri
 }
 
 function makeChat(messages) {
-    return messages.map((m, i) => ({
+    return messages.map((m) => ({
         is_user: m.is_user ?? false,
         mes: m.mes ?? '',
         ...m,
@@ -564,5 +565,107 @@ describe('buildAiRefinePrompt with reasoning context', () => {
             { rulesText: '1. Rule.', systemPrompt: DEFAULT_SYSTEM_PROMPT, reasoning: '' },
         );
         expect(promptText).not.toContain('Scene settings');
+    });
+});
+
+// ─── buildRefineContextBlock ────────────────────────────────────────
+
+describe('buildRefineContextBlock', () => {
+    const baseSettings = {
+        characterContextChars: 500,
+        previousResponseTailChars: 200,
+        pov: 'auto',
+        reasoningContext: false,
+    };
+
+    it('includes character name and description', () => {
+        const ctx = makeContext({ name2: 'Alice', personality: 'brave warrior' });
+        const chat = makeChat([{ is_user: false, mes: 'Hello.' }]);
+        const block = buildRefineContextBlock(baseSettings, ctx, chat, 0, 'Hello.');
+        expect(block).toContain('Alice');
+        expect(block).toContain('brave warrior');
+    });
+
+    it('includes user character name', () => {
+        const ctx = makeContext({ name1: 'Player' });
+        const chat = makeChat([{ is_user: false, mes: 'Hello.' }]);
+        const block = buildRefineContextBlock(baseSettings, ctx, chat, 0, 'Hello.');
+        expect(block).toContain('Player');
+    });
+
+    it('includes last user message', () => {
+        const chat = makeChat([
+            { is_user: true, mes: 'What do you think?' },
+            { is_user: false, mes: 'I think it is fine.' },
+        ]);
+        const block = buildRefineContextBlock(baseSettings, makeContext(), chat, 1, 'I think it is fine.');
+        expect(block).toContain('What do you think?');
+    });
+
+    it('includes previous AI response tail', () => {
+        const chat = makeChat([
+            { is_user: false, mes: 'First AI response with some tail content.' },
+            { is_user: true, mes: 'User reply.' },
+            { is_user: false, mes: 'Second AI response.' },
+        ]);
+        const block = buildRefineContextBlock(baseSettings, makeContext(), chat, 2, 'Second AI response.');
+        expect(block).toContain('tail content');
+    });
+
+    it('includes PoV instructions when PoV is explicit', () => {
+        const settings = { ...baseSettings, pov: '1st' };
+        const chat = makeChat([{ is_user: false, mes: 'Hello.' }]);
+        const block = buildRefineContextBlock(settings, makeContext(), chat, 0, 'Hello.');
+        expect(block).toContain('PERSPECTIVE RULES');
+    });
+
+    it('omits PoV instructions when PoV is auto and undetectable', () => {
+        const settings = { ...baseSettings, pov: 'auto' };
+        const chat = makeChat([{ is_user: false, mes: 'short.' }]);
+        const block = buildRefineContextBlock(settings, makeContext(), chat, 0, 'short.');
+        expect(block).not.toContain('PERSPECTIVE RULES');
+    });
+
+    it('includes reasoning context when enabled', () => {
+        const settings = { ...baseSettings, reasoningContext: true, reasoningContextMode: 'raw', reasoningContextChars: 1000 };
+        const chat = makeChat([{ is_user: false, mes: 'Hello.' }]);
+        const block = buildRefineContextBlock(settings, makeContext(), chat, 0, 'Hello.', { reasoning: 'Some reasoning text here' });
+        expect(block).toContain('Scene settings');
+        expect(block).toContain('reasoning text');
+    });
+
+    it('omits reasoning when disabled', () => {
+        const settings = { ...baseSettings, reasoningContext: false };
+        const chat = makeChat([{ is_user: false, mes: 'Hello.' }]);
+        const block = buildRefineContextBlock(settings, makeContext(), chat, 0, 'Hello.', { reasoning: 'reasoning' });
+        expect(block).not.toContain('Scene settings');
+    });
+
+    it('returns empty string when no context available', () => {
+        const ctx = { characters: {}, characterId: null, name1: '', name2: '' };
+        const chat = makeChat([{ is_user: false, mes: 'short.' }]);
+        const block = buildRefineContextBlock(baseSettings, ctx, chat, 0, 'short.');
+        expect(block).toBe('');
+    });
+
+    it('produces the same context as buildAiRefinePrompt', () => {
+        const settings = { ...baseSettings, pov: '3rd' };
+        const ctx = makeContext({ name1: 'Hero', name2: 'Villain', personality: 'evil' });
+        const chat = makeChat([
+            { is_user: true, mes: 'I attack.' },
+            { is_user: false, mes: 'Villain dodges.' },
+        ]);
+
+        const block = buildRefineContextBlock(settings, ctx, chat, 1, 'Villain dodges.');
+        const { promptText } = buildAiRefinePrompt(settings, ctx, chat, 1, 'Villain dodges.', {
+            rulesText: '1. Rule.',
+            systemPrompt: 'sys',
+            reasoning: '',
+        });
+
+        // The context block from buildRefineContextBlock should appear in the full prompt
+        if (block) {
+            expect(promptText).toContain(block);
+        }
     });
 });
