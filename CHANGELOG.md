@@ -4,6 +4,69 @@ All notable user-facing changes to ReDraft are documented here.
 
 ---
 
+## 3.0.0
+
+**Swarm Mode** — multi-agent refinement strategies that produce better results than a single LLM pass. Each strategy orchestrates multiple focused LLM calls instead of one do-everything call.
+
+### Swarm Strategies
+
+- **Pipeline** — multi-pass sequential refinement. Each stage focuses on a narrow rule set (e.g., Grammar & Formatting, then Prose & Voice, then Continuity & Flow) and passes its output to the next. Stages are reorderable and individually toggleable.
+- **Council** — multiple agents refine the same message in parallel with different emphases (preserving voice, tightening prose, narrative flow), then a judge agent synthesizes the best result or picks the strongest candidate. Configurable council size (2–4) and judge mode.
+- **Review + Refine** — a two-step approach where a reviewer agent produces a structured critique (what to preserve, what to fix, what to leave alone), then a refiner agent applies the critique precisely.
+
+### Swarm Tab (Workbench)
+- New **Swarm** tab in the Workbench sidebar for all swarm configuration.
+- **Enable/disable toggle** — swarm mode applies to AI messages only; user messages always use single-pass.
+- **Strategy picker** with live description.
+- **Pipeline config** — drag-reorder stages, toggle stages on/off.
+- **Council config** — set council size, judge mode (synthesize or pick best), per-agent model overrides (plugin mode only).
+- **Live progress** — during execution, see per-agent status with running/done/queued indicators and a progress bar.
+
+### Per-Agent Model Routing
+- In plugin mode, each council member and the judge can use a different model via the model override fields.
+- Model override is passed as an optional `model` field in the plugin `/refine` request body (backward-compatible).
+- ST mode uses the globally configured model for all agents (noted in the UI).
+
+### Architecture
+- New `lib/swarm/` module: `agents.js` (role definitions, system prompts, `callAgent()` wrapper), `strategies.js` (strategy schemas, presets, validation), `executor.js` (orchestration engine with parallel/sequential execution and progress events).
+- New `_refineMessageSwarm()` in `index.js` mirrors the `_refineMessageCore()` pattern — save original, strip protected blocks, run swarm, restore blocks, update message, persist metadata.
+- `redraftMessage()` and `bulkRedraft()` automatically route through swarm when enabled.
+
+---
+
+## 2.8.0
+
+**ReDraft Workbench** — the floating popout panel is replaced by a full-featured sidebar that slides in from the right edge of the screen.
+
+### Workbench Sidebar
+- **Sidebar replaces popout** — one unified UI surface for all ReDraft controls. Slides in/out with a smooth animation; no more floating panel.
+- **Quick controls** — the sidebar header absorbs all former popout controls: auto-refine toggle, PoV selector, user auto-enhance, user PoV, enhance mode, and action buttons.
+- **Resizable** — drag the left edge to adjust width (280–600px). Width is persisted across sessions.
+- **Persistent state** — open/closed state, active tab, and width are saved and restored on page load.
+- **ESC to close** — press Escape to close the sidebar (diff popup takes priority if open).
+- **`/workbench` slash command** — toggle the sidebar from the chat input.
+
+### Bulk Refine (Refine Tab)
+- **Message picker** — scrollable list of all chat messages with checkboxes. Filter by All / AI / User / Unrefined. Quick-select and deselect controls.
+- **Per-batch overrides** — collapsible section to override PoV and system prompt for a specific run without changing global settings.
+- **Bulk processing** — sequential refinement with progress bar, per-message status updates, configurable delay between messages, and cancel support.
+- **Batch summary** — after a run, see how many succeeded/failed with an "Undo All" button to revert the entire batch.
+
+### History Tab
+- **Refinement log** — reverse-chronological list of all refinements with timestamps, type badges, and single/batch indicators.
+- **Per-entry actions** — view diff or undo individual refinements directly from the history.
+- **Batch cards** — batch runs are grouped with an "Undo Batch" button.
+
+### Stats Tab
+- **Chat statistics dashboard** — total messages, AI/user breakdown, refined/enhanced counts with percentages, word delta, average/min/max refine time, and undo-available count.
+
+### Internal
+- **`_refineMessageCore()`** — extracted core refinement pipeline used by both single and bulk refine. Supports overrides and abort signals.
+- **Metadata expansion** — `redraft_history[]` and `redraft_batches{}` in chatMetadata for tracking refinement history and batch runs.
+- **Concurrency guards** — `isBulkRefining` flag blocks single-refine, auto-refine, and pre-send interceptor during batch operations.
+
+---
+
 ## 2.7.0
 
 **In-Place Enhancement** — enhance your message while it's still in the text box, review and edit before sending.

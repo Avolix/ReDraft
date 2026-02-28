@@ -1,7 +1,7 @@
 /* ReDraft Extension Styles — all colors via ST CSS variables */
 
-/* Floating popout button */
-.redraft-popout-trigger {
+/* ─── Sidebar Trigger Button ─────────────────────────────────────── */
+.redraft-sidebar-trigger {
     position: fixed;
     bottom: calc(var(--bottomFormBlockSize) + 15px);
     right: 15px;
@@ -22,15 +22,11 @@
     padding: 0;
 }
 
-.redraft-popout-trigger:hover {
-    opacity: 1;
-}
+.redraft-sidebar-trigger:hover { opacity: 1; }
+.redraft-sidebar-trigger.redraft-show-duration { opacity: 0.9; }
+.redraft-sidebar-trigger.redraft-refining { opacity: 1; }
 
-.redraft-popout-trigger.redraft-show-duration {
-    opacity: 0.9;
-}
-
-.redraft-popout-trigger .redraft-auto-dot {
+.redraft-sidebar-trigger .redraft-auto-dot {
     position: absolute;
     top: 2px;
     right: 2px;
@@ -41,109 +37,97 @@
     display: none;
 }
 
-.redraft-popout-trigger.auto-active .redraft-auto-dot {
-    display: block;
-}
+.redraft-sidebar-trigger.auto-active .redraft-auto-dot { display: block; }
 
-.redraft-popout-trigger .redraft-trigger-duration {
+.redraft-sidebar-trigger .redraft-trigger-duration {
     font-size: 0.65em;
     font-weight: 600;
     white-space: nowrap;
 }
 
-/* Floating popout panel */
-.redraft-popout-panel {
+/* ─── Sidebar Panel ──────────────────────────────────────────────── */
+.redraft-sidebar {
     position: fixed;
+    top: 0;
+    right: 0;
+    height: 100vh;
+    width: 380px;
     z-index: 4000;
-    width: 280px;
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 10px;
-    box-shadow: 0 0 10px var(--SmartThemeShadowColor);
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--SmartThemeBorderColor);
     background: var(--SmartThemeBlurTintColor);
     backdrop-filter: blur(calc(var(--blurStrength, 10) * 1px));
-    padding: 0;
     font-family: var(--mainFontFamily);
     font-size: var(--mainFontSize);
     color: var(--SmartThemeBodyColor);
-    animation: redraft-popout-in 200ms ease;
-    display: flex;
-    flex-direction: column;
-    min-width: 220px;
-    max-width: 500px;
+    box-shadow: -4px 0 16px var(--SmartThemeShadowColor);
+    transform: translateX(100%);
+    transition: transform 200ms ease;
     overflow: hidden;
 }
 
-.redraft-popout-panel.redraft-dragging {
-    user-select: none;
+.redraft-sidebar.redraft-sidebar-open {
+    transform: translateX(0);
+}
+
+.redraft-sidebar.redraft-sidebar-resizing {
     transition: none;
+    user-select: none;
 }
 
-@keyframes redraft-popout-in {
-    from {
-        opacity: 0;
-        transform: translateY(8px) scale(0.97);
-    }
-
-    to {
-        opacity: 1;
-        transform: translateY(0) scale(1);
-    }
+/* Left-edge resize handle */
+.redraft-sidebar-resize {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 4px;
+    height: 100%;
+    cursor: ew-resize;
+    z-index: 1;
 }
 
-.redraft-popout-trigger.redraft-refining {
-    opacity: 1;
+.redraft-sidebar-resize:hover,
+.redraft-sidebar-resize:active {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 15%, transparent);
 }
 
-.redraft-popout-header {
+/* Header */
+.redraft-sidebar-header {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 10px;
-    cursor: grab;
+    padding: 10px 14px;
     border-bottom: 1px solid var(--SmartThemeBorderColor);
-    user-select: none;
     flex-shrink: 0;
 }
 
-.redraft-popout-header:active {
-    cursor: grabbing;
-}
-
-.redraft-drag-icon {
-    opacity: 0.3;
-    font-size: calc(var(--mainFontSize) * 0.8);
-    flex-shrink: 0;
-    transition: opacity var(--animation-duration-2x, 250ms) ease;
-}
-
-.redraft-popout-header:hover .redraft-drag-icon {
-    opacity: 0.6;
-}
-
-.redraft-popout-title {
+.redraft-sidebar-title {
     font-weight: 600;
-    font-size: calc(var(--mainFontSize) * 0.95);
-    opacity: 0.7;
+    font-size: calc(var(--mainFontSize) * 1.05);
+    opacity: 0.8;
     flex: 1;
 }
 
-.redraft-popout-body {
+.redraft-sidebar-close {
+    cursor: pointer;
+    padding: 4px 8px;
+    opacity: 0.5;
+    transition: opacity 150ms ease;
+}
+
+.redraft-sidebar-close:hover { opacity: 1; }
+
+/* ─── Sidebar Quick Controls ─────────────────────────────────────── */
+.redraft-sidebar-quick {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding: 8px 10px;
-    overflow-y: auto;
-    flex: 1;
-    min-height: 0;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    flex-shrink: 0;
 }
 
-.redraft-popout-body .menu_button {
-    justify-content: flex-start;
-    gap: 8px;
-}
-
-/* Popout sections (AI / User groups) */
-.redraft-popout-section {
+.redraft-sb-section {
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -151,37 +135,38 @@
     border-bottom: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 50%, transparent);
 }
 
-.redraft-popout-section:last-child {
+.redraft-sb-section:last-child {
     border-bottom: none;
     padding-bottom: 0;
 }
 
-/* Inline row: checkbox + PoV on same line */
-.redraft-popout-row {
+.redraft-sb-row {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
 }
 
-.redraft-popout-row .checkbox_label {
+.redraft-sb-row .checkbox_label {
     flex: 1;
     min-width: 0;
     white-space: nowrap;
 }
 
-.redraft-popout-row .redraft-popout-pov {
+.redraft-sb-pov {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     flex-shrink: 0;
 }
 
-/* Enhance mode row */
-.redraft-popout-mode-label {
+.redraft-sb-pov small {
     opacity: 0.6;
     white-space: nowrap;
-    margin-left: 2px;
 }
 
-.redraft-popout-mode-select {
+.redraft-sb-pov select {
+    flex: 1;
     font-size: calc(var(--mainFontSize) * 0.85);
     padding: 2px 4px;
     border-radius: 4px;
@@ -190,35 +175,417 @@
     color: var(--SmartThemeBodyColor);
 }
 
-/* Action buttons group */
-.redraft-popout-actions {
+.redraft-sb-mode-label {
+    opacity: 0.6;
+    white-space: nowrap;
+    margin-left: 2px;
+}
+
+.redraft-sb-mode-select {
+    font-size: calc(var(--mainFontSize) * 0.85);
+    padding: 2px 4px;
+    border-radius: 4px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBlurTintColor, var(--SmartThemeChatTintColor));
+    color: var(--SmartThemeBodyColor);
+}
+
+.redraft-sb-status {
+    font-size: calc(var(--mainFontSize) * 0.8);
+    opacity: 0.5;
+    min-height: 1.2em;
+}
+
+.redraft-sb-actions {
     display: flex;
     flex-direction: column;
     gap: 4px;
     padding-top: 4px;
 }
 
-/* Resize grip — bottom-left corner */
-.redraft-resize-grip {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    width: 18px;
-    height: 18px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: nesw-resize;
-    opacity: 0.2;
-    font-size: 9px;
-    color: var(--SmartThemeBodyColor);
-    transition: opacity var(--animation-duration-2x, 250ms) ease;
-    transform: rotate(45deg);
-    border-radius: 0 0 0 8px;
+.redraft-sb-actions .menu_button {
+    justify-content: flex-start;
+    gap: 8px;
 }
 
-.redraft-resize-grip:hover {
+/* ─── Sidebar Tab Bar ────────────────────────────────────────────── */
+.redraft-sidebar-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    flex-shrink: 0;
+}
+
+.redraft-sidebar-tab {
+    flex: 1;
+    text-align: center;
+    padding: 8px 0;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity 150ms ease, border-bottom 150ms ease;
+    border-bottom: 2px solid transparent;
+    user-select: none;
+}
+
+.redraft-sidebar-tab:hover { opacity: 0.8; }
+
+.redraft-sidebar-tab.active {
+    opacity: 1;
+    border-bottom-color: var(--SmartThemeBodyColor);
+}
+
+/* Tab content area */
+.redraft-sidebar-content {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0;
+}
+
+.redraft-sidebar-tab-content {
+    display: none;
+    padding: 10px 14px;
+}
+
+.redraft-sidebar-tab-content.active {
+    display: block;
+}
+
+/* ─── Workbench: Message Picker ──────────────────────────────────── */
+.redraft-wb-filter-bar {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.redraft-wb-filter {
+    flex: 1;
+    padding: 4px 0;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    font-size: calc(var(--mainFontSize) * 0.8);
+    opacity: 0.5;
+    transition: opacity 150ms ease, background 150ms ease;
+}
+
+.redraft-wb-filter:hover { opacity: 0.8; }
+
+.redraft-wb-filter.active {
+    opacity: 1;
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 10%, transparent);
+}
+
+.redraft-wb-select-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+}
+
+.redraft-wb-select-bar .menu_button {
+    padding: 3px 8px;
+    font-size: calc(var(--mainFontSize) * 0.8);
+}
+
+.redraft-wb-selected-count {
+    font-size: calc(var(--mainFontSize) * 0.85);
+    opacity: 0.7;
+    margin-left: auto;
+}
+
+.redraft-wb-message-list {
+    max-height: 40vh;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 4px;
+    margin-bottom: 8px;
+}
+
+.redraft-wb-message-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 30%, transparent);
+    cursor: pointer;
+    transition: background 100ms ease;
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
+.redraft-wb-message-row:last-child { border-bottom: none; }
+
+.redraft-wb-message-row:hover {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 5%, transparent);
+}
+
+.redraft-wb-message-row.redraft-hidden { display: none; }
+
+.redraft-wb-message-row input[type="checkbox"] { flex-shrink: 0; }
+
+.redraft-wb-message-row i { opacity: 0.5; flex-shrink: 0; width: 14px; text-align: center; }
+
+.redraft-wb-msg-label {
+    flex-shrink: 0;
+    font-weight: 600;
+    opacity: 0.7;
+    min-width: 2.5em;
+}
+
+.redraft-wb-msg-preview {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     opacity: 0.6;
+}
+
+.redraft-wb-refined-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: transparent;
+}
+
+.redraft-wb-refined-dot.active {
+    background: var(--active);
+}
+
+/* ─── Workbench: Overrides ───────────────────────────────────────── */
+.redraft-wb-overrides {
+    margin-bottom: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 4px;
+    padding: 6px 8px;
+}
+
+.redraft-wb-overrides summary {
+    cursor: pointer;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    opacity: 0.7;
+    user-select: none;
+}
+
+.redraft-wb-overrides-body {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* ─── Workbench: Run Controls & Progress ─────────────────────────── */
+.redraft-wb-run-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.redraft-wb-start-btn {
+    width: 100%;
+    justify-content: center;
+}
+
+.redraft-wb-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 0;
+}
+
+.redraft-wb-progress-bar-track {
+    height: 6px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--SmartThemeBorderColor) 50%, transparent);
+    overflow: hidden;
+}
+
+.redraft-wb-progress-bar-fill {
+    height: 100%;
+    width: 0;
+    background: var(--active);
+    border-radius: 3px;
+    transition: width 200ms ease;
+}
+
+.redraft-wb-progress-text {
+    font-size: calc(var(--mainFontSize) * 0.85);
+    opacity: 0.7;
+    text-align: center;
+}
+
+.redraft-wb-progress-current {
+    font-size: calc(var(--mainFontSize) * 0.8);
+    opacity: 0.5;
+    text-align: center;
+}
+
+/* ─── Workbench: Summary ─────────────────────────────────────────── */
+.redraft-wb-summary {
+    padding: 10px 0;
+}
+
+.redraft-wb-summary-header {
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.redraft-wb-summary-failures {
+    margin-bottom: 8px;
+}
+
+.redraft-wb-summary-failures ul {
+    padding-left: 1.5em;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    opacity: 0.7;
+}
+
+.redraft-wb-summary-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* ─── Workbench: History Tab ─────────────────────────────────────── */
+.redraft-wb-empty {
+    text-align: center;
+    opacity: 0.4;
+    padding: 24px 0;
+}
+
+.redraft-wb-batch-card {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.redraft-wb-batch-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    font-size: calc(var(--mainFontSize) * 0.9);
+}
+
+.redraft-wb-batch-stats {
+    font-size: calc(var(--mainFontSize) * 0.8);
+    opacity: 0.6;
+}
+
+.redraft-wb-batch-undo {
+    align-self: flex-start;
+    font-size: calc(var(--mainFontSize) * 0.8);
+}
+
+.redraft-wb-history-entry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 30%, transparent);
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
+.redraft-wb-history-entry.failed { opacity: 0.5; }
+
+.redraft-wb-history-time {
+    opacity: 0.5;
+    min-width: 4em;
+    font-size: calc(var(--mainFontSize) * 0.8);
+}
+
+.redraft-wb-history-idx {
+    font-weight: 600;
+    min-width: 2em;
+}
+
+.redraft-wb-badge {
+    font-size: 0.7em;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 10%, transparent);
+    opacity: 0.7;
+}
+
+.redraft-wb-history-status {
+    margin-left: auto;
+}
+
+.redraft-wb-history-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.redraft-wb-history-actions button {
+    background: none;
+    border: none;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.5;
+    cursor: pointer;
+    padding: 2px 4px;
+    transition: opacity 150ms ease;
+}
+
+.redraft-wb-history-actions button:hover { opacity: 1; }
+
+/* ─── Workbench: Stats Tab ───────────────────────────────────────── */
+.redraft-wb-stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.redraft-wb-stat-card {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    padding: 10px;
+    text-align: center;
+}
+
+.redraft-wb-stat-value {
+    font-size: calc(var(--mainFontSize) * 1.4);
+    font-weight: 700;
+}
+
+.redraft-wb-stat-label {
+    font-size: calc(var(--mainFontSize) * 0.8);
+    opacity: 0.6;
+    margin-top: 2px;
+}
+
+.redraft-wb-stat-sub {
+    font-size: calc(var(--mainFontSize) * 0.75);
+    opacity: 0.4;
+    margin-top: 2px;
+}
+
+.redraft-wb-stat-delta {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+}
+
+/* ─── Sidebar Mobile Responsive ──────────────────────────────────── */
+@media (max-width: 600px) {
+    .redraft-sidebar {
+        width: 100vw !important;
+    }
+
+    .redraft-sidebar.redraft-sidebar-open ~ .redraft-sidebar-trigger {
+        display: none;
+    }
+
+    .redraft-wb-stats-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 /* Spacing: checkbox between form groups (e.g. Protect font/color tags) */
@@ -277,33 +644,6 @@
 .redraft-custom-rules-toggle-label {
     margin: 0;
     gap: 4px;
-}
-
-.redraft-popout-status {
-    font-size: calc(var(--mainFontSize) * 0.8);
-    opacity: 0.5;
-    min-height: 1.2em;
-}
-
-.redraft-popout-pov {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.redraft-popout-pov small {
-    opacity: 0.6;
-    white-space: nowrap;
-}
-
-.redraft-popout-pov select {
-    flex: 1;
-    font-size: calc(var(--mainFontSize) * 0.85);
-    padding: 2px 4px;
-    border-radius: 4px;
-    border: 1px solid var(--SmartThemeBorderColor);
-    background: var(--SmartThemeBlurTintColor, var(--SmartThemeChatTintColor));
-    color: var(--SmartThemeBodyColor);
 }
 
 /* All selects in form groups (PoV, Connection, Character context, Previous response tail) — match ST */
@@ -821,4 +1161,255 @@
 .redraft-textarea-enhance-btn.redraft-textarea-loading {
     opacity: 1;
     pointer-events: auto;
+}
+
+/* ─── Swarm Tab ──────────────────────────────────────────────────── */
+
+.redraft-swarm-toggle {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    margin-bottom: 12px;
+}
+
+.redraft-swarm-toggle .checkbox_label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+}
+
+.redraft-swarm-hint {
+    display: block;
+    margin-top: 4px;
+    color: var(--SmartThemeQuoteColor);
+    font-size: calc(var(--mainFontSize) * 0.85);
+    line-height: 1.4;
+}
+
+.redraft-swarm-config {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.redraft-swarm-strategy-select {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.redraft-swarm-strategy-select label {
+    font-weight: 600;
+    font-size: calc(var(--mainFontSize) * 0.9);
+}
+
+.redraft-swarm-strategy-select select {
+    max-width: 260px;
+}
+
+.redraft-swarm-strategy-desc {
+    color: var(--SmartThemeQuoteColor);
+    font-size: calc(var(--mainFontSize) * 0.82);
+    line-height: 1.4;
+}
+
+.redraft-swarm-panel h4 {
+    margin: 0 0 8px;
+    font-size: calc(var(--mainFontSize) * 0.95);
+    font-weight: 600;
+}
+
+.redraft-swarm-panel h5 {
+    margin: 8px 0 6px;
+    font-size: calc(var(--mainFontSize) * 0.88);
+    font-weight: 600;
+}
+
+/* Pipeline stages */
+
+.redraft-swarm-stages {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.redraft-swarm-stage {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    transition: background var(--animation-duration, 150ms) ease, box-shadow var(--animation-duration, 150ms) ease;
+}
+
+.redraft-swarm-stage.dragging {
+    opacity: 0.5;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.redraft-swarm-stage-drag {
+    cursor: grab;
+    color: var(--SmartThemeQuoteColor);
+    padding: 2px;
+    opacity: 0.6;
+    transition: opacity var(--animation-duration, 150ms) ease;
+}
+
+.redraft-swarm-stage-drag:hover {
+    opacity: 1;
+}
+
+.redraft-swarm-stage .checkbox_label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+}
+
+.redraft-swarm-stage-rules {
+    color: var(--SmartThemeQuoteColor);
+    font-size: calc(var(--mainFontSize) * 0.78);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 140px;
+    margin-left: auto;
+}
+
+/* Council / field layout */
+
+.redraft-swarm-field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.redraft-swarm-field label {
+    min-width: 110px;
+    font-size: calc(var(--mainFontSize) * 0.88);
+    font-weight: 500;
+}
+
+.redraft-swarm-field input[type="number"] {
+    width: 70px;
+}
+
+.redraft-swarm-field input[type="text"] {
+    flex: 1;
+    min-width: 0;
+}
+
+.redraft-swarm-field select {
+    flex: 1;
+    min-width: 0;
+}
+
+.redraft-swarm-model-overrides {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+}
+
+/* Swarm progress */
+
+.redraft-swarm-progress {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+}
+
+.redraft-swarm-progress h4 {
+    margin: 0 0 10px;
+    font-size: calc(var(--mainFontSize) * 0.92);
+    font-weight: 600;
+}
+
+.redraft-swarm-agents {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+}
+
+.redraft-swarm-agent-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    border-radius: 4px;
+    transition: background var(--animation-duration, 150ms) ease;
+}
+
+.redraft-swarm-agent-status i {
+    width: 16px;
+    text-align: center;
+}
+
+.redraft-swarm-status-running {
+    color: var(--SmartThemeBodyColor);
+}
+
+.redraft-swarm-status-running i {
+    color: var(--active);
+}
+
+.redraft-swarm-status-done {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.redraft-swarm-status-done i {
+    color: #4caf50;
+}
+
+.redraft-swarm-status-queued {
+    color: var(--SmartThemeQuoteColor);
+    opacity: 0.6;
+}
+
+.redraft-swarm-progress-bar {
+    width: 100%;
+    height: 6px;
+    background: var(--SmartThemeBorderColor);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 6px;
+}
+
+.redraft-swarm-progress-fill {
+    height: 100%;
+    background: var(--active);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+    width: 0%;
+}
+
+.redraft-swarm-progress-text {
+    font-size: calc(var(--mainFontSize) * 0.82);
+    color: var(--SmartThemeQuoteColor);
+    text-align: center;
+}
+
+/* Mobile */
+
+@media (max-width: 768px) {
+    .redraft-swarm-field {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 4px;
+    }
+
+    .redraft-swarm-field label {
+        min-width: unset;
+    }
+
+    .redraft-swarm-stage-rules {
+        display: none;
+    }
 }
