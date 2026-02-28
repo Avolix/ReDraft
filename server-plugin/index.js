@@ -1,5 +1,5 @@
 /**
- * ReDraft server plugin — runs inside SillyTavern and proxies refine requests to a separate LLM.
+ * ReDraft server plugin ??? runs inside SillyTavern and proxies refine requests to a separate LLM.
  * Changes to this file require users to re-run server-plugin/install.js and restart ST.
  * Note "Server plugin update required" in release notes / INSTALL_PLUGIN.md when releasing such changes.
  *
@@ -14,7 +14,7 @@ const { getUserId, getConfigPath: _getConfigPath, maskKey, validateApiUrl, sanit
 const CONFIG_DIR = __dirname;
 const MODULE_NAME = 'redraft';
 /** Server plugin version (semver). Bump when releasing server-plugin changes; client shows this in settings. */
-const SERVER_PLUGIN_VERSION = '1.2.1';
+const SERVER_PLUGIN_VERSION = '1.3.0';
 const REQUEST_TIMEOUT_MS = 120_000;
 const MAX_BODY_SIZE_BYTES = 512 * 1024; // 512 KB
 const MAX_LLM_ATTEMPTS = 3;
@@ -216,7 +216,7 @@ async function init(router) {
     });
 
     /**
-     * POST /config — Save API credentials to disk (per-user in multi-user mode).
+     * POST /config ??? Save API credentials to disk (per-user in multi-user mode).
      * Accepts: { apiUrl, apiKey, model, maxTokens? }
      */
     router.post('/config', (req, res) => {
@@ -266,7 +266,7 @@ async function init(router) {
     });
 
     /**
-     * GET /status — Return plugin status (no secrets exposed). Per-user in multi-user mode.
+     * GET /status ??? Return plugin status (no secrets exposed). Per-user in multi-user mode.
      * Always includes version so the client can show "Server plugin 1.1" in settings.
      */
     router.get('/status', (req, res) => {
@@ -293,7 +293,7 @@ async function init(router) {
     });
 
     /**
-     * GET /models — Fetch available models from the configured API.
+     * GET /models ??? Fetch available models from the configured API.
      * Returns: { models: [{ id, name? }] }
      */
     router.get('/models', async (req, res) => {
@@ -349,7 +349,7 @@ async function init(router) {
     });
 
     /**
-     * POST /refine — Proxy refinement request to configured LLM. Per-user config in multi-user mode.
+     * POST /refine ??? Proxy refinement request to configured LLM. Per-user config in multi-user mode.
      * Accepts: { messages: [{role, content}] }
      * Returns: { text: string }
      * Outer try/catch ensures we always respond with JSON (never HTML or no response).
@@ -371,7 +371,7 @@ async function init(router) {
                 return res.status(413).json({ error: 'Request body too large' });
             }
 
-            const { messages, timeout: requestedTimeout } = body;
+            const { messages, timeout: requestedTimeout, model: modelOverride } = body;
             if (!Array.isArray(messages) || messages.length === 0) {
                 return res.status(400).json({ error: 'messages must be a non-empty array' });
             }
@@ -395,9 +395,12 @@ async function init(router) {
                 return res.status(503).json({ error: 'ReDraft is not configured. Please set up API credentials.' });
             }
 
+            const effectiveModel = (modelOverride && typeof modelOverride === 'string' && modelOverride.trim())
+                ? modelOverride.trim()
+                : config.model;
             const endpoint = `${config.apiUrl}/chat/completions`;
             const payload = {
-                model: config.model,
+                model: effectiveModel,
                 messages: messages,
                 max_tokens: config.maxTokens || 4096,
                 temperature: 0.3,
@@ -429,28 +432,28 @@ async function init(router) {
                 if (response.ok || response.status !== 503 || attempt === MAX_LLM_ATTEMPTS) break;
 
                 const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
-                console.warn(`[${MODULE_NAME}] LLM returned 503 for model "${config.model}" (attempt ${attempt}/${MAX_LLM_ATTEMPTS}), retrying in ${delay}ms...`);
+                console.warn(`[${MODULE_NAME}] LLM returned 503 for model "${effectiveModel}" (attempt ${attempt}/${MAX_LLM_ATTEMPTS}), retrying in ${delay}ms...`);
                 await new Promise(resolve => setTimeout(resolve, delay));
             }
 
             if (!response.ok) {
                 const sanitized = sanitizeError(rawBody, config);
-                console.error(`[${MODULE_NAME}] LLM API error (${response.status}) for model "${config.model}" at ${config.apiUrl}:`, sanitized);
+                console.error(`[${MODULE_NAME}] LLM API error (${response.status}) for model "${effectiveModel}" at ${config.apiUrl}:`, sanitized);
                 const statusHints = {
-                    400: 'Bad request — the model name may be invalid or the request format is not supported by this API.',
-                    401: 'Unauthorized — your API key is invalid, expired, or missing.',
-                    402: 'Payment required — your API account may be out of credits.',
-                    403: 'Forbidden — your API key does not have access to this model.',
-                    404: 'Not found — the model name or API endpoint may be incorrect.',
-                    429: 'Rate limited — too many requests. Wait a moment and try again.',
-                    500: 'Internal server error on the API side — try again later.',
-                    502: 'Bad gateway — the API\'s upstream provider returned an error.',
-                    503: 'Service unavailable — the model\'s backend is temporarily down. Try again or use a different model.',
+                    400: 'Bad request ??? the model name may be invalid or the request format is not supported by this API.',
+                    401: 'Unauthorized ??? your API key is invalid, expired, or missing.',
+                    402: 'Payment required ??? your API account may be out of credits.',
+                    403: 'Forbidden ??? your API key does not have access to this model.',
+                    404: 'Not found ??? the model name or API endpoint may be incorrect.',
+                    429: 'Rate limited ??? too many requests. Wait a moment and try again.',
+                    500: 'Internal server error on the API side ??? try again later.',
+                    502: 'Bad gateway ??? the API\'s upstream provider returned an error.',
+                    503: 'Service unavailable ??? the model\'s backend is temporarily down. Try again or use a different model.',
                 };
                 const hint = statusHints[response.status] || '';
                 const detail = sanitized.slice(0, 200);
                 return res.status(502).json({
-                    error: `LLM API returned ${response.status} for model "${config.model}"${hint ? ': ' + hint : ''}${detail ? ' (' + detail + ')' : ''}`,
+                    error: `LLM API returned ${response.status} for model "${effectiveModel}"${hint ? ': ' + hint : ''}${detail ? ' (' + detail + ')' : ''}`,
                 });
             }
 
@@ -460,36 +463,36 @@ async function init(router) {
             } catch {
                 const trimmed = (rawBody || '').trim();
                 if (trimmed.startsWith('<') || trimmed.toLowerCase().startsWith('<!doctype')) {
-                    console.error(`[${MODULE_NAME}] LLM API returned HTML instead of JSON for model "${config.model}" at ${config.apiUrl}`);
-                    return res.status(502).json({ error: `API returned a web page instead of JSON for model "${config.model}". Check your API URL — it should be the base URL (e.g. https://openrouter.ai/api/v1), not a login page or docs URL.` });
+                    console.error(`[${MODULE_NAME}] LLM API returned HTML instead of JSON for model "${effectiveModel}" at ${config.apiUrl}`);
+                    return res.status(502).json({ error: `API returned a web page instead of JSON for model "${effectiveModel}". Check your API URL ??? it should be the base URL (e.g. https://openrouter.ai/api/v1), not a login page or docs URL.` });
                 }
-                return res.status(502).json({ error: `API returned invalid JSON for model "${config.model}": ${trimmed.slice(0, 100)}…` });
+                return res.status(502).json({ error: `API returned invalid JSON for model "${effectiveModel}": ${trimmed.slice(0, 100)}??` });
             }
 
             const text = data?.choices?.[0]?.message?.content;
 
             if (!text) {
-                console.error(`[${MODULE_NAME}] LLM returned empty response for model "${config.model}". Raw:`, (rawBody || '').slice(0, 300));
-                return res.status(502).json({ error: `LLM returned an empty or malformed response for model "${config.model}". The model may not support chat completions or the response format was unexpected.` });
+                console.error(`[${MODULE_NAME}] LLM returned empty response for model "${effectiveModel}". Raw:`, (rawBody || '').slice(0, 300));
+                return res.status(502).json({ error: `LLM returned an empty or malformed response for model "${effectiveModel}". The model may not support chat completions or the response format was unexpected.` });
             }
 
             return res.json({ text });
 
         } catch (err) {
             if (err.name === 'AbortError') {
-                const model = config?.model || 'unknown';
+                const model = (typeof effectiveModel === 'string' && effectiveModel) ? effectiveModel : (config?.model || 'unknown');
                 console.error(`[${MODULE_NAME}] LLM request timed out after ${timeoutMs}ms for model "${model}"`);
-                sendJson(504, { error: `LLM request timed out after ${Math.round(timeoutMs / 1000)}s for model "${model}". The model may be overloaded — try increasing the timeout in ReDraft's Advanced settings, or use a faster model.` });
+                sendJson(504, { error: `LLM request timed out after ${Math.round(timeoutMs / 1000)}s for model "${model}". The model may be overloaded ??? try increasing the timeout in ReDraft's Advanced settings, or use a faster model.` });
                 return;
             }
             const safeMsg = sanitizeError(err.message, config);
-            console.error(`[${MODULE_NAME}] Refine error for model "${config?.model || 'unknown'}":`, safeMsg);
+            console.error(`[${MODULE_NAME}] Refine error for model "${(typeof effectiveModel === 'string' && effectiveModel) ? effectiveModel : (config?.model || 'unknown')}":`, safeMsg);
             sendJson(500, { error: `Refinement failed: ${safeMsg.slice(0, 200)}` });
         }
     });
 
     const hasAnyConfig = fs.readdirSync(CONFIG_DIR).some(f => f.startsWith('config') && f.endsWith('.json'));
-    console.log(`[${MODULE_NAME}] Plugin loaded. Multi-user config supported. ${hasAnyConfig ? 'Config file(s) present.' : 'No config yet — configure via UI.'}`);
+    console.log(`[${MODULE_NAME}] Plugin loaded. Multi-user config supported. ${hasAnyConfig ? 'Config file(s) present.' : 'No config yet ??? configure via UI.'}`);
 }
 
 async function exit() {
